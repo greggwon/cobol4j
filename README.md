@@ -1,7 +1,7 @@
 # Creating COBOL representative APIs.
 
 ## What a translated program looks like:
-
+```
   A COBOL program like:
   01 CUSTOMER-RECORD.
      05 CUST-NAME         PIC X(20).
@@ -16,8 +16,9 @@
      SET ACTIVE TO TRUE.
      ADD 100.00 TO CUST-BALANCE
         ON SIZE ERROR PERFORM ERROR-ROUTINE.
-
+```
 ## Transpiles to:
+```
   Record customerRecord = Record.define("CUSTOMER-RECORD")
       .pic("CUST-NAME", "X(20)")
       .pic("CUST-BALANCE", "S9(7)V99").comp3()
@@ -31,3 +32,4 @@
   customerRecord.set("ACTIVE");
   customerRecord.add("CUST-BALANCE", new BigDecimal("100.00"),
       SizeErrorHandler.onError(this::errorRoutine));
+```
