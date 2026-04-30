@@ -287,10 +287,9 @@ class RecordTest {
         rec.move("SMALL", 100L);
 
         boolean[] errorOccurred = {false};
-        boolean ok = rec.add("SMALL", new BigDecimal("999"),
+        rec.add("SMALL", new BigDecimal("999"),
             SizeErrorHandler.onError(() -> errorOccurred[0] = true));
 
-        assertFalse(ok);
         assertTrue(errorOccurred[0]);
         // Field should retain original value on size error
         assertEquals(100, rec.getInt("SMALL"));
@@ -446,5 +445,50 @@ class RecordTest {
 
         assertEquals("A", rec.getString("STATUS"));
         assertEquals(0, rec.getInt("COUNT"));
+    }
+
+    // ── Fluent chaining ─────────────────────────────────────────────
+
+    @Test
+    void fluentChaining() {
+        Record rec = Record.define("CUSTOMER")
+            .pic("CUST-NAME",    "X(20)")
+            .pic("CUST-BALANCE", "S9(7)V99").comp3()
+            .pic("CUST-STATUS",  "X")
+                .value88("ACTIVE",   "A")
+                .value88("INACTIVE", "I")
+            .pic("ERR-FLAG",     "X")
+            .build();
+
+        // One fluent chain — no repetitive variable name
+        rec.move("CUST-NAME", "JOHN DOE")
+           .move("CUST-BALANCE", new BigDecimal("50000.00"))
+           .set("ACTIVE")
+           .add("CUST-BALANCE", new BigDecimal("100.00"),
+               SizeErrorHandler.of(
+                   () -> rec.move("ERR-FLAG", "Y"),
+                   () -> rec.move("ERR-FLAG", "N")));
+
+        assertEquals("JOHN DOE            ", rec.getString("CUST-NAME"));
+        assertEquals(0, new BigDecimal("50100.00").compareTo(rec.getDecimal("CUST-BALANCE")));
+        assertTrue(rec.is("ACTIVE"));
+        assertEquals("N", rec.getString("ERR-FLAG").trim());
+    }
+
+    @Test
+    void fluentFigurativeConstants() {
+        Record rec = Record.define("TEST")
+            .pic("F1", "X(5)")
+            .pic("F2", "X(5)")
+            .pic("F3", "X(5)")
+            .build();
+
+        rec.move("F1", "HELLO")
+           .moveSpaces("F2")
+           .moveZeros("F3");
+
+        assertEquals("HELLO", rec.getString("F1"));
+        assertEquals("     ", rec.getString("F2"));
+        assertEquals("00000", rec.getString("F3"));
     }
 }

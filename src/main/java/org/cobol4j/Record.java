@@ -125,6 +125,22 @@ public final class Record {
         return Arrays.copyOf(data, data.length);
     }
 
+    /** Direct access to the backing buffer — package-private for file I/O. */
+    byte[] rawBuffer() { return data; }
+
+    /**
+     * Load external bytes into this record's buffer (e.g., from file I/O).
+     * Copies up to the record's length, padding remainder with spaces.
+     */
+    public Record loadFrom(byte[] source) {
+        int copyLen = Math.min(source.length, data.length);
+        System.arraycopy(source, 0, data, 0, copyLen);
+        if (copyLen < data.length) {
+            Arrays.fill(data, copyLen, data.length, (byte) ' ');
+        }
+        return this;
+    }
+
     /** Total record size in bytes. */
     public int length() { return totalSize; }
 
@@ -136,39 +152,42 @@ public final class Record {
     // ═══════════════════════════════════════════════════════════════
 
     /** MOVE a String value to a field, applying COBOL move rules. */
-    public void move(String fieldName, String value) {
+    public Record move(String fieldName, String value) {
         FieldDef f = requireField(fieldName);
         moveToField(f, f.offset(), value);
+        return this;
     }
 
     /** MOVE a String value to an OCCURS element. */
-    public void move(String fieldName, int index, String value) {
+    public Record move(String fieldName, int index, String value) {
         FieldDef f = requireField(fieldName);
         moveToField(f, f.offsetForIndex(index), value);
+        return this;
     }
 
     /** MOVE a numeric value to a field. */
-    public void move(String fieldName, BigDecimal value) {
+    public Record move(String fieldName, BigDecimal value) {
         FieldDef f = requireField(fieldName);
         if (f.isNumeric()) {
             encodeNumeric(f, f.offset(), value);
         } else {
             moveToField(f, f.offset(), value.toPlainString());
         }
+        return this;
     }
 
     /** MOVE a numeric literal to a field. */
-    public void move(String fieldName, long value) {
-        move(fieldName, BigDecimal.valueOf(value));
+    public Record move(String fieldName, long value) {
+        return move(fieldName, BigDecimal.valueOf(value));
     }
 
     /** MOVE a double literal to a field. */
-    public void move(String fieldName, double value) {
-        move(fieldName, BigDecimal.valueOf(value));
+    public Record move(String fieldName, double value) {
+        return move(fieldName, BigDecimal.valueOf(value));
     }
 
     /** MOVE from one field in a source record to a field in this record. */
-    public void move(String targetField, Record source, String sourceField) {
+    public Record move(String targetField, Record source, String sourceField) {
         FieldDef target = requireField(targetField);
         FieldDef src = source.requireField(sourceField);
 
@@ -193,13 +212,14 @@ public final class Record {
             String val = source.getString(sourceField);
             moveAlphanumeric(target, target.offset(), val);
         }
+        return this;
     }
 
     /**
      * MOVE CORRESPONDING — copy fields with matching names from source to this record.
      * For each field in source, if this record has a field with the same name, MOVE it.
      */
-    public void moveCorresponding(Record source) {
+    public Record moveCorresponding(Record source) {
         for (String fieldName : source.fieldsByName.keySet()) {
             FieldDef target = fieldsByName.get(fieldName);
             if (target != null && target.isElementary()) {
@@ -209,34 +229,39 @@ public final class Record {
                 }
             }
         }
+        return this;
     }
 
     /** MOVE SPACES — fill field with spaces. */
-    public void moveSpaces(String fieldName) {
+    public Record moveSpaces(String fieldName) {
         FieldDef f = requireField(fieldName);
         Arrays.fill(data, f.offset(), f.offset() + f.size(), (byte) ' ');
+        return this;
     }
 
     /** MOVE ZEROS — fill numeric field with zeros, alphanumeric with '0'. */
-    public void moveZeros(String fieldName) {
+    public Record moveZeros(String fieldName) {
         FieldDef f = requireField(fieldName);
         if (f.isNumeric()) {
             encodeNumeric(f, f.offset(), BigDecimal.ZERO);
         } else {
             Arrays.fill(data, f.offset(), f.offset() + f.size(), (byte) '0');
         }
+        return this;
     }
 
     /** MOVE HIGH-VALUES — fill with 0xFF bytes. */
-    public void moveHighValues(String fieldName) {
+    public Record moveHighValues(String fieldName) {
         FieldDef f = requireField(fieldName);
         Arrays.fill(data, f.offset(), f.offset() + f.size(), (byte) 0xFF);
+        return this;
     }
 
     /** MOVE LOW-VALUES — fill with 0x00 bytes. */
-    public void moveLowValues(String fieldName) {
+    public Record moveLowValues(String fieldName) {
         FieldDef f = requireField(fieldName);
         Arrays.fill(data, f.offset(), f.offset() + f.size(), (byte) 0x00);
+        return this;
     }
 
     // ── MOVE internals ──────────────────────────────────────────────
@@ -433,61 +458,57 @@ public final class Record {
     //  ARITHMETIC — BigDecimal engine with PIC constraints
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * ADD value TO field. Returns true if no size error.
-     */
-    public boolean add(String fieldName, BigDecimal value) {
+    /** ADD value TO field. */
+    public Record add(String fieldName, BigDecimal value) {
         return add(fieldName, value, SizeErrorHandler.silent());
     }
 
-    public boolean add(String fieldName, BigDecimal value, SizeErrorHandler handler) {
+    public Record add(String fieldName, BigDecimal value, SizeErrorHandler handler) {
         FieldDef f = requireNumericField(fieldName);
         BigDecimal current = decodeNumeric(f, f.offset());
         BigDecimal result = current.add(value);
-        return storeWithSizeCheck(f, f.offset(), result, handler);
+        storeWithSizeCheck(f, f.offset(), result, handler);
+        return this;
     }
 
-    /**
-     * SUBTRACT value FROM field.
-     */
-    public boolean subtract(String fieldName, BigDecimal value) {
+    /** SUBTRACT value FROM field. */
+    public Record subtract(String fieldName, BigDecimal value) {
         return subtract(fieldName, value, SizeErrorHandler.silent());
     }
 
-    public boolean subtract(String fieldName, BigDecimal value, SizeErrorHandler handler) {
+    public Record subtract(String fieldName, BigDecimal value, SizeErrorHandler handler) {
         FieldDef f = requireNumericField(fieldName);
         BigDecimal current = decodeNumeric(f, f.offset());
         BigDecimal result = current.subtract(value);
-        return storeWithSizeCheck(f, f.offset(), result, handler);
+        storeWithSizeCheck(f, f.offset(), result, handler);
+        return this;
     }
 
-    /**
-     * MULTIPLY field BY value.
-     */
-    public boolean multiply(String fieldName, BigDecimal value) {
+    /** MULTIPLY field BY value. */
+    public Record multiply(String fieldName, BigDecimal value) {
         return multiply(fieldName, value, SizeErrorHandler.silent());
     }
 
-    public boolean multiply(String fieldName, BigDecimal value, SizeErrorHandler handler) {
+    public Record multiply(String fieldName, BigDecimal value, SizeErrorHandler handler) {
         FieldDef f = requireNumericField(fieldName);
         BigDecimal current = decodeNumeric(f, f.offset());
         BigDecimal result = current.multiply(value);
-        return storeWithSizeCheck(f, f.offset(), result, handler);
+        storeWithSizeCheck(f, f.offset(), result, handler);
+        return this;
     }
 
-    /**
-     * DIVIDE field BY value.
-     */
-    public boolean divide(String fieldName, BigDecimal value) {
+    /** DIVIDE field BY value. */
+    public Record divide(String fieldName, BigDecimal value) {
         return divide(fieldName, value, SizeErrorHandler.silent());
     }
 
-    public boolean divide(String fieldName, BigDecimal value, SizeErrorHandler handler) {
+    public Record divide(String fieldName, BigDecimal value, SizeErrorHandler handler) {
         FieldDef f = requireNumericField(fieldName);
         BigDecimal current = decodeNumeric(f, f.offset());
         // Use enough precision to avoid ArithmeticException on non-terminating decimals
         BigDecimal result = current.divide(value, f.pic().decimalDigits() + 5, RoundingMode.HALF_EVEN);
-        return storeWithSizeCheck(f, f.offset(), result, handler);
+        storeWithSizeCheck(f, f.offset(), result, handler);
+        return this;
     }
 
     /**
@@ -495,13 +516,14 @@ public final class Record {
      * The caller uses standard Java/BigDecimal arithmetic to compute the value;
      * this method applies PIC constraints and size-error checking.
      */
-    public boolean compute(String fieldName, BigDecimal value) {
+    public Record compute(String fieldName, BigDecimal value) {
         return compute(fieldName, value, SizeErrorHandler.silent());
     }
 
-    public boolean compute(String fieldName, BigDecimal value, SizeErrorHandler handler) {
+    public Record compute(String fieldName, BigDecimal value, SizeErrorHandler handler) {
         FieldDef f = requireNumericField(fieldName);
-        return storeWithSizeCheck(f, f.offset(), value, handler);
+        storeWithSizeCheck(f, f.offset(), value, handler);
+        return this;
     }
 
     /**
@@ -552,7 +574,7 @@ public final class Record {
     }
 
     /** SET a condition — moves the condition's value into the owning field. */
-    public void set(String conditionName) {
+    public Record set(String conditionName) {
         Condition cond = conditionsByName.get(conditionName);
         if (cond == null) {
             throw new IllegalArgumentException("No condition named: " + conditionName);
@@ -566,9 +588,10 @@ public final class Record {
         for (FieldDef f : fieldsByName.values()) {
             if (f.conditions().containsKey(conditionName)) {
                 moveToField(f, f.offset(), value);
-                return;
+                return this;
             }
         }
+        return this;
     }
 
     // ═══════════════════════════════════════════════════════════════
