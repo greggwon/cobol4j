@@ -1,8 +1,12 @@
 # Creating COBOL representative APIs.
 
-## What a translated program looks like:
+## What a translated program would look like
+Below is just a simple example of a program with varied, simple code structure, showing how a
+Java based API might codify the same details in a way that provides translation capabilities without
+a huge amount of repeative, litteral Java code.
+
 ```
-  A COBOL program like:
+###  A COBOL program like:
   01 CUSTOMER-RECORD.
      05 CUST-NAME         PIC X(20).
      05 CUST-BALANCE      PIC S9(7)V99 COMP-3.
