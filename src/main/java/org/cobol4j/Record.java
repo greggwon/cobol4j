@@ -309,6 +309,12 @@ public final class Record {
     // ═══════════════════════════════════════════════════════════════
 
     private void encodeNumeric(FieldDef f, int offset, BigDecimal value) {
+        // Numeric edited fields get formatted display output
+        if (f.pic().category() == Pic.Category.NUMERIC_EDITED) {
+            String formatted = EditedNumeric.format(value, f.pic());
+            moveAlphanumeric(f, offset, formatted);
+            return;
+        }
         switch (f.usage()) {
             case COMP3 -> PackedDecimal.encode(value, f.pic(), data, offset, f.size());
             case COMP, COMP4, COMP5 -> encodeBinary(f, offset, value);
@@ -442,8 +448,9 @@ public final class Record {
      * Decode any field to its display representation as a String.
      */
     private String decodeDisplay(FieldDef f, int offset) {
-        if (f.isGroup() || !f.isNumeric()) {
-            // Alphanumeric: raw bytes as characters
+        if (f.isGroup() || !f.isNumeric()
+                || (f.pic() != null && f.pic().category() == Pic.Category.NUMERIC_EDITED)) {
+            // Alphanumeric or numeric-edited: raw bytes as characters
             return new String(data, offset, elementSize(f));
         }
         // Numeric: return the display representation of the numeric value
@@ -527,14 +534,26 @@ public final class Record {
     }
 
     /**
+     * Store a value with ROUNDED (HALF_UP rounding instead of truncation).
+     */
+    boolean storeRounded(FieldDef f, int offset, BigDecimal value, SizeErrorHandler handler) {
+        return storeWithSizeCheck(f, offset, value, handler, RoundingMode.HALF_UP);
+    }
+
+    /**
      * Store a value into a numeric field, checking for size overflow.
      * COBOL size error = the integer part of the result has more digits than the PIC allows.
      */
     private boolean storeWithSizeCheck(FieldDef f, int offset, BigDecimal value,
                                        SizeErrorHandler handler) {
+        return storeWithSizeCheck(f, offset, value, handler, RoundingMode.DOWN);
+    }
+
+    private boolean storeWithSizeCheck(FieldDef f, int offset, BigDecimal value,
+                                       SizeErrorHandler handler, RoundingMode rounding) {
         Pic pic = f.pic();
         // Truncate/round to the PIC's decimal precision
-        BigDecimal fitted = value.setScale(pic.decimalDigits(), RoundingMode.DOWN);
+        BigDecimal fitted = value.setScale(pic.decimalDigits(), rounding);
 
         // Check if the integer part exceeds PIC capacity
         BigDecimal intPart = fitted.abs().setScale(0, RoundingMode.DOWN);
@@ -606,6 +625,71 @@ public final class Record {
         FieldDef f = requireField(fieldName);
         int start = f.offset() + position - 1; // 1-based to 0-based
         return new String(data, start, length);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  FIELD REFERENCES — by-reference handles to field locations
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Get a live Field reference — a by-reference handle into this record's buffer.
+     * The Field can be stored, passed to methods, and used for GIVING, SEARCH, SORT.
+     */
+    public Field field(String fieldName) {
+        return new Field(this, requireField(fieldName));
+    }
+
+    /**
+     * Get a Field reference to a specific OCCURS element (0-based index).
+     */
+    public Field field(String fieldName, int index) {
+        return new Field(this, requireField(fieldName), index);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  INITIALIZE — type-aware bulk initialization
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * INITIALIZE — reset all elementary fields to type-appropriate defaults.
+     * Alphanumeric/alphabetic → SPACES, numeric → ZEROS.
+     * Recurses through group items. Skips FILLER fields.
+     */
+    public Record initialize() {
+        initializeFields(topLevelFields);
+        return this;
+    }
+
+    /**
+     * INITIALIZE a specific group or elementary field.
+     */
+    public Record initialize(String fieldName) {
+        FieldDef f = requireField(fieldName);
+        if (f.isGroup()) {
+            initializeFields(f.children());
+        } else {
+            initializeField(f);
+        }
+        return this;
+    }
+
+    private void initializeFields(List<FieldDef> fields) {
+        for (FieldDef f : fields) {
+            if (f.isGroup()) {
+                initializeFields(f.children());
+            } else {
+                initializeField(f);
+            }
+        }
+    }
+
+    private void initializeField(FieldDef f) {
+        if (f.name().equals("FILLER")) return;
+        if (f.isNumeric()) {
+            encodeNumeric(f, f.offset(), BigDecimal.ZERO);
+        } else {
+            Arrays.fill(data, f.offset(), f.offset() + f.size(), (byte) ' ');
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -724,6 +808,18 @@ public final class Record {
         /** OCCURS — the last-defined field/group repeats this many times. */
         public Builder occurs(int times) {
             requireLastEntry().occurs = times;
+            return this;
+        }
+
+        /**
+         * OCCURS DEPENDING ON — variable-length array.
+         * Allocates space for maxOccurs, but the effective count at runtime
+         * is determined by the value of the depending-on field.
+         */
+        public Builder occursDependingOn(int maxOccurs, String dependingOnFieldName) {
+            FieldEntry entry = requireLastEntry();
+            entry.occurs = maxOccurs;
+            entry.dependingOn = dependingOnFieldName;
             return this;
         }
 
@@ -928,6 +1024,7 @@ public final class Record {
             final Map<String, Condition> conditions = new LinkedHashMap<>();
             String redefines;
             int occurs;
+            String dependingOn;  // OCCURS DEPENDING ON field name
             String initialValue;
 
             // Elementary

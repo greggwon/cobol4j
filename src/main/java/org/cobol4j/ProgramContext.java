@@ -156,19 +156,61 @@ public final class ProgramContext {
     }
 
     /**
+     * PERFORM VARYING...AFTER — nested loop.
+     * <pre>{@code
+     * // PERFORM PROCESS VARYING I FROM 1 BY 1 UNTIL I > 10
+     * //                   AFTER J FROM 1 BY 1 UNTIL J > 5
+     * ctx.performVaryingAfter("PROCESS",
+     *     rec, "I", 1, 1, () -> rec.getInt("I") > 10,
+     *     rec, "J", 1, 1, () -> rec.getInt("J") > 5);
+     * }</pre>
+     */
+    public ProgramContext performVaryingAfter(String paragraphName,
+                                              Record outerRec, String outerField,
+                                              long outerFrom, long outerBy,
+                                              BooleanSupplier outerUntil,
+                                              Record innerRec, String innerField,
+                                              long innerFrom, long innerBy,
+                                              BooleanSupplier innerUntil) {
+        outerRec.move(outerField, outerFrom);
+        while (!outerUntil.getAsBoolean()) {
+            innerRec.move(innerField, innerFrom);
+            while (!innerUntil.getAsBoolean()) {
+                executeParagraph(paragraphName);
+                long innerCurrent = innerRec.getLong(innerField);
+                innerRec.move(innerField, innerCurrent + innerBy);
+            }
+            long outerCurrent = outerRec.getLong(outerField);
+            outerRec.move(outerField, outerCurrent + outerBy);
+        }
+        return this;
+    }
+
+    /**
      * Inline PERFORM — execute a block of code as if it were a paragraph,
      * without defining a named paragraph. Useful for simple loops.
-     * <pre>{@code
-     * ctx.performUntil(() -> rec.is("EOF"), () -> {
-     *     // read and process
-     * });
-     * }</pre>
      */
     public ProgramContext performUntil(BooleanSupplier until, Runnable body) {
         while (!until.getAsBoolean()) {
             body.run();
         }
         return this;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  EXIT PARAGRAPH / EXIT SECTION
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * EXIT PARAGRAPH — return from the current paragraph immediately.
+     * Code after this call in the same paragraph will not execute.
+     */
+    public void exitParagraph() {
+        throw new ExitParagraphException();
+    }
+
+    static final class ExitParagraphException extends RuntimeException {
+        ExitParagraphException() { super(null, null, true, false); }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -333,9 +375,13 @@ public final class ProgramContext {
         if (para == null) {
             throw new IllegalArgumentException("No paragraph named: " + name);
         }
-        para.accept(this);
-        // GoToException propagates up to Program.run() or perform(from, thru)
-        // which handle the control-flow redirect at the dispatch level.
+        try {
+            para.accept(this);
+        } catch (ExitParagraphException e) {
+            // EXIT PARAGRAPH — normal early return, execution continues
+        }
+        // GoToException and StopRunException propagate up to Program.run()
+        // or perform(from, thru) which handle the redirect at dispatch level.
     }
 
     private int requireParagraphIndex(String name) {

@@ -21,7 +21,7 @@ a huge amount of repeative, litteral Java code.
      ADD 100.00 TO CUST-BALANCE
         ON SIZE ERROR PERFORM ERROR-ROUTINE.
 ```
-## Transpiles to:
+### Transpiles to:
 ```
   Record customerRecord = Record.define("CUSTOMER-RECORD")
       .pic("CUST-NAME", "X(20)")
@@ -36,4 +36,34 @@ a huge amount of repeative, litteral Java code.
   customerRecord.set("ACTIVE");
   customerRecord.add("CUST-BALANCE", new BigDecimal("100.00"),
       SizeErrorHandler.onError(this::errorRoutine));
+```
+## A more fluent API version would look like this to help manage context and control with less literal text.
+```
+  Field custName = rec.field("CUST-NAME");
+  Field custBal  = rec.field("CUST-BALANCE");
+  Field total    = rec.field("WS-TOTAL");
+
+  Program.define("CUSTOMER-REPORT")
+      .workingStorage(rec)
+      .paragraph("MAIN", ctx -> {
+          rec.initialize();
+          ctx.open(custFile, OpenMode.INPUT)
+             .performUntil("READ-LOOP", () -> rec.is("END-OF-FILE"))
+             .close(custFile)
+             .display("Total: ", total.get())
+             .stopRun();
+      })
+      .paragraph("READ-LOOP", ctx -> {
+          ctx.read(custFile).into(rec)
+             .atEnd(() -> rec.set("END-OF-FILE"))
+             .notAtEnd(() -> ctx.perform("PROCESS"))
+             .execute();
+      })
+      .paragraph("PROCESS", ctx -> {
+          Arithmetic.add(total.get(), custBal.get())
+             .giving(total)
+             .rounded()
+             .execute();
+      })
+      .build().run();
 ```

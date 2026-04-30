@@ -33,6 +33,10 @@ public final class Inspect {
     private final List<TallyRule> tallyRules = new ArrayList<>();
     private final List<ReplaceRule> replaceRules = new ArrayList<>();
     private IntUnaryOperator customReplacer;
+    private String convertFrom;
+    private String convertTo;
+    private String beforeInitial;
+    private String afterInitial;
 
     private Inspect(Record record, String fieldName) {
         this.record = record;
@@ -67,9 +71,22 @@ public final class Inspect {
     /** Execute tallying and return the count. */
     public int count() {
         String value = record.getString(fieldName);
+        // Compute scope
+        int start = 0;
+        int end = value.length();
+        if (afterInitial != null) {
+            int idx = value.indexOf(afterInitial);
+            if (idx >= 0) start = idx + afterInitial.length();
+            else start = value.length();
+        }
+        if (beforeInitial != null) {
+            int idx = value.indexOf(beforeInitial, start);
+            if (idx >= 0) end = idx;
+        }
+        String scoped = value.substring(start, end);
         int tally = 0;
         for (TallyRule rule : tallyRules) {
-            tally += rule.apply(value);
+            tally += rule.apply(scoped);
         }
         return tally;
     }
@@ -100,19 +117,70 @@ public final class Inspect {
         return this;
     }
 
+    /**
+     * CONVERTING from-chars TO to-chars — translate characters using a mapping table.
+     * Each character in {@code from} is replaced by the corresponding character in {@code to}.
+     * <pre>{@code
+     * Inspect.on(rec, "FIELD")
+     *     .converting("abcdefghijklmnopqrstuvwxyz",
+     *                 "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+     *     .apply();
+     * }</pre>
+     */
+    public Inspect converting(String from, String to) {
+        this.convertFrom = from;
+        this.convertTo = to;
+        return this;
+    }
+
+    /** BEFORE INITIAL — limit scope to characters before the first occurrence. */
+    public Inspect before(String initial) {
+        this.beforeInitial = initial;
+        return this;
+    }
+
+    /** AFTER INITIAL — limit scope to characters after the first occurrence. */
+    public Inspect after(String initial) {
+        this.afterInitial = initial;
+        return this;
+    }
+
     /** Execute replacements and write the result back to the field. */
     public void apply() {
         String value = record.getString(fieldName);
         char[] chars = value.toCharArray();
 
-        // Apply rule-based replacements
-        for (ReplaceRule rule : replaceRules) {
-            rule.apply(chars);
+        // Compute the effective range based on BEFORE/AFTER INITIAL
+        int start = 0;
+        int end = chars.length;
+        if (afterInitial != null) {
+            int idx = value.indexOf(afterInitial);
+            if (idx >= 0) start = idx + afterInitial.length();
+            else start = chars.length; // not found → empty range
+        }
+        if (beforeInitial != null) {
+            int idx = value.indexOf(beforeInitial, start);
+            if (idx >= 0) end = idx;
         }
 
-        // Apply custom lambda replacement
+        // Apply CONVERTING
+        if (convertFrom != null && convertTo != null) {
+            for (int i = start; i < end; i++) {
+                int pos = convertFrom.indexOf(chars[i]);
+                if (pos >= 0 && pos < convertTo.length()) {
+                    chars[i] = convertTo.charAt(pos);
+                }
+            }
+        }
+
+        // Apply rule-based replacements (scoped)
+        for (ReplaceRule rule : replaceRules) {
+            rule.apply(chars, start, end);
+        }
+
+        // Apply custom lambda replacement (scoped)
         if (customReplacer != null) {
-            for (int i = 0; i < chars.length; i++) {
+            for (int i = start; i < end; i++) {
                 chars[i] = (char) customReplacer.applyAsInt(chars[i]);
             }
         }
@@ -153,21 +221,21 @@ public final class Inspect {
     private enum ReplaceType { ALL, LEADING, FIRST }
 
     private record ReplaceRule(ReplaceType type, char from, char to) {
-        void apply(char[] chars) {
+        void apply(char[] chars, int start, int end) {
             switch (type) {
                 case ALL -> {
-                    for (int i = 0; i < chars.length; i++) {
+                    for (int i = start; i < end; i++) {
                         if (chars[i] == from) chars[i] = to;
                     }
                 }
                 case LEADING -> {
-                    for (int i = 0; i < chars.length; i++) {
+                    for (int i = start; i < end; i++) {
                         if (chars[i] == from) chars[i] = to;
                         else break;
                     }
                 }
                 case FIRST -> {
-                    for (int i = 0; i < chars.length; i++) {
+                    for (int i = start; i < end; i++) {
                         if (chars[i] == from) { chars[i] = to; break; }
                     }
                 }
