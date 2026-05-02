@@ -508,6 +508,139 @@ ConnectionFactory.sqliteInMemory()
 ConnectionFactory.jdbc(hikariDataSource)
 ```
 
+## Mainframe Interop — Coexisting with Live COBOL Systems
+
+In a real migration, COBOL and Java programs coexist for years, sharing data through
+files, databases, and message queues. cobol4j provides the interop layer so Java
+programs can read, write, and exchange data in the exact formats that mainframe COBOL
+programs expect.
+
+### Copybook Import
+
+Every COBOL system's data contracts live in **copybooks** (`.cpy` files). The copybook
+importer reads them and produces matching `Record` definitions — so the Java side uses
+the same field names, same byte layout, same data types as the COBOL side.
+
+```java
+// Import a copybook and create a Record at runtime
+Record custRec = CopybookImporter.toRecord("CUSTCPY.cpy");
+
+// Or generate Java source for build-time integration
+String javaCode = CopybookImporter.toJavaSource("CUSTCPY.cpy");
+// Produces: Record customerRecord = Record.define("CUSTOMER-RECORD").pic(...).build();
+```
+
+From a copybook like:
+```cobol
+01 CUSTOMER-RECORD.
+   05 CUST-ID        PIC X(10).
+   05 CUST-NAME      PIC X(30).
+   05 CUST-BALANCE   PIC S9(7)V99 COMP-3.
+   05 CUST-STATUS    PIC X.
+      88 ACTIVE       VALUE "A".
+      88 INACTIVE     VALUE "I".
+```
+
+The importer produces a Record with the same fields, same sizes, same conditions.
+The Java program can then read and write data that COBOL programs understand.
+
+### EBCDIC Encoding
+
+Mainframes use EBCDIC, not ASCII. Every byte transferred from z/OS needs translation.
+
+```java
+// Translate a mainframe data buffer to ASCII
+byte[] asciiData = Ebcdic.toAscii(ebcdicBytes);
+
+// Translate back for sending to the mainframe
+byte[] ebcdicData = Ebcdic.toEbcdic(asciiString);
+
+// Supported code pages:
+Ebcdic.codePage(Ebcdic.CodePage.CP037)   // US/Canada (most common)
+Ebcdic.codePage(Ebcdic.CodePage.CP500)   // International (Latin-1)
+Ebcdic.codePage(Ebcdic.CodePage.CP1047)  // z/OS Unix
+```
+
+EBCDIC collation order differs from ASCII (spaces < lowercase < uppercase < digits).
+For comparisons that must match mainframe behavior:
+
+```java
+// EBCDIC-order string comparison
+Ebcdic.compareEbcdic("abc", "ABC");  // negative — lowercase < uppercase in EBCDIC
+Ebcdic.compareEbcdic("ABC", "123");  // negative — letters < digits in EBCDIC
+```
+
+### Mainframe File I/O
+
+Read and write files in mainframe format — fixed-length (FB) or variable-length
+with Record Descriptor Words (VB), with automatic EBCDIC translation.
+
+```java
+// Read a file transferred from z/OS via FTP
+Record custRec = CopybookImporter.toRecord("CUSTCPY.cpy");
+
+MainframeFile.reader("/data/from_mainframe/CUSTFILE.dat")
+    .fixedLength(200)
+    .ebcdic(Ebcdic.CodePage.CP037)
+    .forEach(custRec, rec -> {
+        String name = rec.getString("CUST-NAME").trim();
+        Decimal balance = rec.getDecimal("CUST-BALANCE");
+        // process — same field names as the COBOL program
+    });
+
+// Write a file the mainframe can read
+MainframeFile.writer("/data/to_mainframe/OUTFILE.dat")
+    .fixedLength(200)
+    .ebcdic(Ebcdic.CodePage.CP037)
+    .write(custRec);
+```
+
+Variable-length records (with 4-byte RDW prefix):
+
+```java
+MainframeFile.reader(path).variableLength().ebcdic(Ebcdic.CodePage.CP037)
+    .forEach(rec, r -> { /* process */ });
+```
+
+### Message Queue Interop (MQ)
+
+MQ messages from a mainframe are just EBCDIC byte buffers with a copybook layout.
+Read them the same way:
+
+```java
+// Receive a message from MQ as raw bytes
+byte[] mqMessage = mqQueue.get();
+
+// Load into a Record defined from the same copybook
+Record msgRec = CopybookImporter.toRecord("MQMSGCPY.cpy");
+MainframeFile.reader(mqMessage)
+    .fixedLength(msgRec.length())
+    .ebcdic(Ebcdic.CodePage.CP037)
+    .forEach(msgRec, rec -> {
+        // Process the message using COBOL field names
+    });
+```
+
+### CICS COMMAREA
+
+CICS programs communicate via a COMMAREA — a byte buffer matching a copybook layout.
+The Record byte buffer *is* the COMMAREA:
+
+```java
+// Build a COMMAREA from a copybook
+Record commarea = CopybookImporter.toRecord("CICSCPY.cpy");
+commarea.move("REQUEST-TYPE", "INQ")
+        .move("CUST-ID", "C001");
+
+// Send to CICS via Transaction Gateway
+byte[] ebcdicCommarea = Ebcdic.toEbcdic(commarea.buffer());
+byte[] response = cicsGateway.call("CUSTINQ", ebcdicCommarea);
+
+// Read the response
+commarea.loadFrom(Ebcdic.toAscii(response));
+String name = commarea.getString("CUST-NAME").trim();
+```
+
 ## Extension Points
 
 | Extension Point | Interface/Type | Purpose |
@@ -533,19 +666,18 @@ Requires Java 17+ and Maven. Tests use JUnit 5, H2, and SQLite.
 
 ## Status
 
-Working prototype with 152 passing tests. The core COBOL runtime semantics are
-implemented and the transpiler handles a practical subset of COBOL source. The
-runner can transpile, compile, and execute COBOL programs directly.
+Working prototype with 167 passing tests across 55 source files. The core COBOL
+runtime semantics, transpiler, runner, and mainframe interop layer are implemented.
 
 Remaining work for production transpilation:
 
 - CALL with LINKAGE SECTION (inter-program communication)
 - Report Writer (REPORT SECTION)
 - Screen Section (terminal UI)
-- CICS middleware commands
-- EBCDIC collation for comparisons
-- COPY/REPLACE preprocessor
+- CICS middleware commands (beyond COMMAREA — screen maps, queues, task control)
+- COPY/REPLACE preprocessor (copybook inclusion with text replacement)
 - SPECIAL-NAMES (DECIMAL-POINT IS COMMA, etc.)
+- Additional EBCDIC code pages beyond CP037/CP500/CP1047
 
 ## License
 
