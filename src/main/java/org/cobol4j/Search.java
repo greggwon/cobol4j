@@ -18,7 +18,6 @@
  */
 package org.cobol4j;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.IntConsumer;
@@ -130,9 +129,9 @@ public final class Search {
         private final Record record;
         private final FieldDef field;
         private IntFunction<String> keyExtractor;
-        private IntFunction<BigDecimal> numericKeyExtractor;
+        private IntFunction<Decimal> numericKeyExtractor;
         private String targetString;
-        private java.math.BigDecimal targetNumeric;
+        private Decimal targetNumeric;
         private Runnable atEnd;
         private IntConsumer found;
 
@@ -152,7 +151,7 @@ public final class Search {
         }
 
         /** Define a numeric key extractor. */
-        public BinaryBuilder numericKey(IntFunction<BigDecimal> extractor) {
+        public BinaryBuilder numericKey(IntFunction<Decimal> extractor) {
             this.numericKeyExtractor = extractor;
             return this;
         }
@@ -164,7 +163,7 @@ public final class Search {
         }
 
         /** The target value to search for (numeric). */
-        public BinaryBuilder equalTo(java.math.BigDecimal value) {
+        public BinaryBuilder equalTo(Decimal value) {
             this.targetNumeric = value;
             return this;
         }

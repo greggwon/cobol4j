@@ -48,7 +48,7 @@ public final class PackedDecimal {
      * @param length  number of bytes allocated for this field
      * @return true if the value fit without truncation of integer digits
      */
-    public static boolean encode(BigDecimal value, Pic pic, byte[] bytes, int offset, int length) {
+    static boolean encode(BigDecimal value, Pic pic, byte[] bytes, int offset, int length) {
         // Scale the value to remove the decimal point: 123.45 with scale 2 → 12345
         BigDecimal scaled = value.movePointRight(pic.decimalDigits());
         BigInteger unscaled = scaled.toBigInteger(); // truncates toward zero
@@ -109,7 +109,7 @@ public final class PackedDecimal {
      * @param length  number of bytes for this field
      * @return the decoded value with proper scale
      */
-    public static BigDecimal decode(Pic pic, byte[] bytes, int offset, int length) {
+    static BigDecimal decode(Pic pic, byte[] bytes, int offset, int length) {
         StringBuilder digits = new StringBuilder(pic.totalDigits());
 
         // Read all bytes except last: two digits each

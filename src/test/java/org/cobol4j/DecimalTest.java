@@ -154,10 +154,10 @@ class DecimalTest {
 
         // Write through Variable → Record is updated
         bal.set(Decimal.of("123.45"));
-        assertEquals(0, new java.math.BigDecimal("123.45").compareTo(rec.getDecimal("BAL")));
+        assertTrue(rec.getDecimal("BAL").equalTo(Decimal.of("123.45")));
 
         // Read through Variable ← Record value
-        rec.move("BAL", new java.math.BigDecimal("999.99"));
+        rec.move("BAL", Decimal.of("999.99"));
         assertTrue(bal.get().equalTo(Decimal.of("999.99")));
     }
 

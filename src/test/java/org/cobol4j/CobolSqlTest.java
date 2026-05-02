@@ -19,7 +19,7 @@
 package org.cobol4j;
 
 import org.junit.jupiter.api.*;
-import java.math.BigDecimal;
+import org.cobol4j.Decimal;
 import java.sql.*;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -77,7 +77,7 @@ class CobolSqlTest {
         assertTrue(sql.isSuccess());
         assertEquals(0, sql.sqlCode());
         assertEquals("ALICE SMITH", rec.getString("WS-NAME").trim());
-        assertEquals(0, new BigDecimal("5000.00").compareTo(rec.getDecimal("WS-BAL")));
+        assertTrue(rec.getDecimal("WS-BAL").equalTo(Decimal.of("5000.00")));
     }
 
     @Test
@@ -97,7 +97,7 @@ class CobolSqlTest {
 
         assertTrue(sql.isSuccess());
         assertEquals("BOB JONES", rec.getString("WS-NAME").trim());
-        assertEquals(0, new BigDecimal("1500.50").compareTo(rec.getDecimal("WS-BAL")));
+        assertTrue(rec.getDecimal("WS-BAL").equalTo(Decimal.of("1500.50")));
     }
 
     @Test
@@ -131,7 +131,7 @@ class CobolSqlTest {
         assertTrue(cursor.isOpen());
 
         int count = 0;
-        BigDecimal total = BigDecimal.ZERO;
+        Decimal total = Decimal.ZERO;
         sql.fetch(cursor).into(rec, "WS-NAME", "WS-BAL").execute();
         while (sql.isSuccess()) {
             count++;
@@ -144,7 +144,7 @@ class CobolSqlTest {
 
         assertEquals(3, count);
         // 5000.00 + 1500.50 + 250.75 = 6751.25
-        assertEquals(0, new BigDecimal("6751.25").compareTo(total));
+        assertTrue(total.equalTo(Decimal.of("6751.25")));
     }
 
     @Test
@@ -185,7 +185,7 @@ class CobolSqlTest {
 
         rec.move("WS-ID", "C099")
            .move("WS-NAME", "NEW CUSTOMER")
-           .move("WS-BAL", new BigDecimal("999.99"))
+           .move("WS-BAL", Decimal.of("999.99"))
            .move("WS-STATUS", "A");
 
         sql.execute("INSERT INTO CUSTOMERS (CUST_ID, CUST_NAME, CUST_BAL, CUST_STATUS) VALUES (?, ?, ?, ?)")
@@ -219,7 +219,7 @@ class CobolSqlTest {
             .build();
 
         rec.move("WS-ID", "C003")
-           .move("WS-BAL", new BigDecimal("500.00"));
+           .move("WS-BAL", Decimal.of("500.00"));
 
         sql.execute("UPDATE CUSTOMERS SET CUST_BAL = ? WHERE CUST_ID = ?")
            .param(rec, "WS-BAL")
@@ -235,7 +235,7 @@ class CobolSqlTest {
            .into(rec, "WS-BAL")
            .execute();
 
-        assertEquals(0, new BigDecimal("500.00").compareTo(rec.getDecimal("WS-BAL")));
+        assertTrue(rec.getDecimal("WS-BAL").equalTo(Decimal.of("500.00")));
 
         // Restore original
         sql.executeImmediate("UPDATE CUSTOMERS SET CUST_BAL = 250.75 WHERE CUST_ID = ?", "C003");
@@ -452,7 +452,7 @@ class CobolSqlTest {
             .workingStorage(wsRec)
             .onDisplay(s -> {})
             .paragraph("MAIN-LOGIC", ctx -> {
-                wsRec.move("WS-TOTAL", BigDecimal.ZERO)
+                wsRec.move("WS-TOTAL", Decimal.ZERO)
                      .move("WS-COUNT", 0L);
 
                 sql.open(cursor);
@@ -470,7 +470,7 @@ class CobolSqlTest {
 
                 if (sql.isSuccess()) {
                     wsRec.add("WS-TOTAL", wsRec.getDecimal("WS-BAL"))
-                         .add("WS-COUNT", BigDecimal.ONE);
+                         .add("WS-COUNT", Decimal.ONE);
                 }
             })
             .build();
@@ -478,7 +478,7 @@ class CobolSqlTest {
         program.run();
 
         assertEquals(3, wsRec.getInt("WS-COUNT"));
-        assertEquals(0, new BigDecimal("6751.25").compareTo(wsRec.getDecimal("WS-TOTAL")));
+        assertEquals(0, Decimal.of("6751.25").compareTo(wsRec.getDecimal("WS-TOTAL")));
 
         var output = program.context().displayOutput();
         assertEquals("Customers: 3", output.get(0));

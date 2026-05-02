@@ -19,7 +19,7 @@
 package org.cobol4j;
 
 import org.junit.jupiter.api.Test;
-import java.math.BigDecimal;
+import org.cobol4j.Decimal;
 import java.util.ArrayList;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
@@ -47,10 +47,10 @@ class NewFeaturesTest {
         Field bal = rec.field("BAL");
 
         name.move("ALICE");
-        bal.move(new BigDecimal("500.00")).add(new BigDecimal("100.00"));
+        bal.move(Decimal.of("500.00")).add(Decimal.of("100.00"));
 
         assertEquals("ALICE", name.trimmed());
-        assertEquals(0, new BigDecimal("600.00").compareTo(bal.get()));
+        assertEquals(0, Decimal.of("600.00").compareTo(bal.get()));
     }
 
     @Test
@@ -62,12 +62,12 @@ class NewFeaturesTest {
 
         Field a = rec.field("A");
         Field b = rec.field("B");
-        a.move(new BigDecimal("100.00"));
-        b.move(new BigDecimal("200.00"));
+        a.move(Decimal.of("100.00"));
+        b.move(Decimal.of("200.00"));
 
         // Pass fields to a method — by-reference semantics
         addFields(a, b);
-        assertEquals(0, new BigDecimal("300.00").compareTo(a.get()));
+        assertEquals(0, Decimal.of("300.00").compareTo(a.get()));
     }
 
     private void addFields(Field target, Field source) {
@@ -86,16 +86,16 @@ class NewFeaturesTest {
             .pic("C", "S9(5)V99")
             .build();
 
-        rec.move("A", new BigDecimal("100.00"));
-        rec.move("B", new BigDecimal("200.50"));
+        rec.move("A", Decimal.of("100.00"));
+        rec.move("B", Decimal.of("200.50"));
 
         Arithmetic.add(rec.getDecimal("A"), rec.getDecimal("B"))
             .giving(rec.field("C"))
             .execute();
 
-        assertEquals(0, new BigDecimal("300.50").compareTo(rec.getDecimal("C")));
+        assertTrue(rec.getDecimal("C").equalTo(Decimal.of("300.50")));
         // A and B unchanged
-        assertEquals(0, new BigDecimal("100.00").compareTo(rec.getDecimal("A")));
+        assertTrue(rec.getDecimal("A").equalTo(Decimal.of("100.00")));
     }
 
     @Test
@@ -106,7 +106,7 @@ class NewFeaturesTest {
             .pic("TOTAL", "S9(7)V99")
             .build();
 
-        rec.move("PRICE", new BigDecimal("10.33"));
+        rec.move("PRICE", Decimal.of("10.33"));
         rec.move("QTY", 3L);
 
         // 10.33 * 3 = 30.99 (exact), so rounded vs not doesn't matter here
@@ -115,7 +115,7 @@ class NewFeaturesTest {
             .rounded()
             .execute();
 
-        assertEquals(0, new BigDecimal("30.99").compareTo(rec.getDecimal("TOTAL")));
+        assertTrue(rec.getDecimal("TOTAL").equalTo(Decimal.of("30.99")));
     }
 
     @Test
@@ -147,9 +147,9 @@ class NewFeaturesTest {
             .pic("ERR", "X")
             .build();
 
-        rec.move("BIG", new BigDecimal("99999.99"));
+        rec.move("BIG", Decimal.of("99999.99"));
 
-        Arithmetic.add(rec.getDecimal("BIG"), BigDecimal.ONE)
+        Arithmetic.add(rec.getDecimal("BIG"), Decimal.ONE)
             .giving(rec.field("SMALL"))
             .onSizeError(SizeErrorHandler.onError(() -> rec.move("ERR", "Y")))
             .execute();
@@ -170,13 +170,13 @@ class NewFeaturesTest {
             .build();
 
         rec.move("NAME", "HELLO")
-           .move("AMT", new BigDecimal("123.45"))
+           .move("AMT", Decimal.of("123.45"))
            .move("CODE", "ABC");
 
         rec.initialize();
 
         assertEquals("          ", rec.getString("NAME")); // spaces
-        assertEquals(0, BigDecimal.ZERO.compareTo(rec.getDecimal("AMT"))); // zeros
+        assertTrue(rec.getDecimal("AMT").equalTo(Decimal.ZERO)); // zeros
         assertEquals("   ", rec.getString("CODE")); // spaces
     }
 
@@ -213,7 +213,7 @@ class NewFeaturesTest {
     @Test
     void lengthFunction() {
         Record rec = Record.define("T").pic("F", "X(20)").build();
-        assertEquals(BigDecimal.valueOf(20), Intrinsic.length(rec, "F"));
+        assertEquals(Decimal.of(20), Intrinsic.length(rec, "F"));
         assertEquals(20, Intrinsic.lengthInt(rec, "F"));
     }
 
@@ -229,33 +229,33 @@ class NewFeaturesTest {
 
     @Test
     void numvalFunction() {
-        assertEquals(0, new BigDecimal("123.45").compareTo(Intrinsic.numval("  123.45 ")));
-        assertEquals(0, new BigDecimal("-42").compareTo(Intrinsic.numval("42-")));
-        assertEquals(0, new BigDecimal("100").compareTo(Intrinsic.numval("+100")));
+        assertEquals(Decimal.of("123.45"), Intrinsic.numval("  123.45 "));
+        assertEquals(Decimal.of("-42"), Intrinsic.numval("42-"));
+        assertEquals(Decimal.of("100"), Intrinsic.numval("+100"));
     }
 
     @Test
     void numvalCFunction() {
-        assertEquals(0, new BigDecimal("1234.56").compareTo(Intrinsic.numvalC("$1,234.56")));
+        assertEquals(Decimal.of("1234.56"), Intrinsic.numvalC("$1,234.56"));
     }
 
     @Test
     void numericFunctions() {
-        assertEquals(0, BigDecimal.valueOf(2).compareTo(Intrinsic.mod(BigDecimal.valueOf(17), BigDecimal.valueOf(5))));
-        assertEquals(0, BigDecimal.valueOf(2).compareTo(Intrinsic.rem(BigDecimal.valueOf(17), BigDecimal.valueOf(5))));
-        assertEquals(0, BigDecimal.valueOf(3).compareTo(Intrinsic.integer(new BigDecimal("3.7"))));
-        assertEquals(0, BigDecimal.valueOf(-3).compareTo(Intrinsic.integerPart(new BigDecimal("-3.7"))));
-        assertEquals(0, BigDecimal.valueOf(5).compareTo(Intrinsic.abs(new BigDecimal("-5"))));
+        assertEquals(Decimal.of(2), Intrinsic.mod(Decimal.of(17), Decimal.of(5)));
+        assertEquals(Decimal.of(2), Intrinsic.rem(Decimal.of(17), Decimal.of(5)));
+        assertEquals(Decimal.of(3), Intrinsic.integer(Decimal.of("3.7")));
+        assertEquals(Decimal.of(-3), Intrinsic.integerPart(Decimal.of("-3.7")));
+        assertEquals(Decimal.of(5), Intrinsic.abs(Decimal.of("-5")));
     }
 
     @Test
     void aggregateFunctions() {
-        BigDecimal[] vals = {BigDecimal.valueOf(10), BigDecimal.valueOf(20), BigDecimal.valueOf(30)};
-        assertEquals(0, BigDecimal.valueOf(30).compareTo(Intrinsic.max(vals)));
-        assertEquals(0, BigDecimal.valueOf(10).compareTo(Intrinsic.min(vals)));
-        assertEquals(0, BigDecimal.valueOf(20).compareTo(
-            Intrinsic.mean(vals).setScale(0, java.math.RoundingMode.HALF_UP)));
-        assertEquals(0, BigDecimal.valueOf(20).compareTo(Intrinsic.median(vals)));
+        Decimal[] vals = {Decimal.of(10), Decimal.of(20), Decimal.of(30)};
+        assertEquals(Decimal.of(30), Intrinsic.max(vals));
+        assertEquals(Decimal.of(10), Intrinsic.min(vals));
+        assertEquals(Decimal.of(20),
+            Intrinsic.mean(vals).setScale(0, java.math.RoundingMode.HALF_UP));
+        assertEquals(Decimal.of(20), Intrinsic.median(vals));
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -348,7 +348,7 @@ class NewFeaturesTest {
                 // Feed records in unsorted order
                 for (String name : List.of("CHARLIE", "ALICE", "BOB")) {
                     sortRec.move("SORT-NAME", name);
-                    sortRec.move("SORT-AMT", BigDecimal.ZERO);
+                    sortRec.move("SORT-AMT", Decimal.ZERO);
                     input.release();
                 }
             })
@@ -398,7 +398,7 @@ class NewFeaturesTest {
             .pic("DISPLAY-AMT", "Z(4)9V99")
             .build();
 
-        rec.move("DISPLAY-AMT", new BigDecimal("123.45"));
+        rec.move("DISPLAY-AMT", Decimal.of("123.45"));
         String result = rec.getString("DISPLAY-AMT");
         // PIC Z(4)9V99: 5 integer positions + 2 decimal, no actual dot char
         // "  12345" (V is implied — no display character)
@@ -412,7 +412,7 @@ class NewFeaturesTest {
             .pic("DISPLAY-AMT", "Z(5)9.99")
             .build();
 
-        rec.move("DISPLAY-AMT", new BigDecimal("1234.56"));
+        rec.move("DISPLAY-AMT", Decimal.of("1234.56"));
         String result = rec.getString("DISPLAY-AMT");
         // Contains the formatted number with decimal point
         assertTrue(result.contains("."), "Got: '" + result + "'");
@@ -424,7 +424,7 @@ class NewFeaturesTest {
             .pic("DISPLAY-AMT", "Z(5)9.99")
             .build();
 
-        rec.move("DISPLAY-AMT", BigDecimal.ZERO);
+        rec.move("DISPLAY-AMT", Decimal.ZERO);
         String result = rec.getString("DISPLAY-AMT");
         // Zero suppressed: leading Zs become spaces, the 9 shows 0
         assertTrue(result.contains("0"), "Got: '" + result + "'");
@@ -519,7 +519,7 @@ class NewFeaturesTest {
                 ctx.stopRun();
             })
             .paragraph("BODY", ctx ->
-                rec.add("COUNT", BigDecimal.ONE))
+                rec.add("COUNT", Decimal.ONE))
             .build();
 
         program.run();

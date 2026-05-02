@@ -84,8 +84,8 @@ public final class Intrinsic {
     // ── String functions ────────────────────────────────────────────
 
     /** FUNCTION LENGTH — byte length of a field. */
-    public static BigDecimal length(Record record, String fieldName) {
-        return BigDecimal.valueOf(record.fieldDef(fieldName).size());
+    public static Decimal length(Record record, String fieldName) {
+        return Decimal.of(record.fieldDef(fieldName).size());
     }
 
     /** FUNCTION LENGTH — byte length of a field (int). */
@@ -129,12 +129,12 @@ public final class Intrinsic {
     }
 
     /**
-     * FUNCTION NUMVAL — convert a display numeric string to a BigDecimal.
+     * FUNCTION NUMVAL — convert a display numeric string to a Decimal.
      * Handles leading/trailing spaces, embedded signs, decimal points.
      */
-    public static BigDecimal numval(String value) {
+    public static Decimal numval(String value) {
         String s = value.trim().replace(" ", "");
-        if (s.isEmpty()) return BigDecimal.ZERO;
+        if (s.isEmpty()) return Decimal.ZERO;
         // Handle trailing sign: "123-" or "123+"
         if (s.endsWith("-")) {
             s = "-" + s.substring(0, s.length() - 1);
@@ -143,67 +143,69 @@ public final class Intrinsic {
         }
         // Handle leading sign: "+123" or "-123" (already handled)
         try {
-            return new BigDecimal(s);
+            return Decimal.wrap(new BigDecimal(s));
         } catch (NumberFormatException e) {
-            return BigDecimal.ZERO;
+            return Decimal.ZERO;
         }
     }
 
     /**
      * FUNCTION NUMVAL-C — like NUMVAL but also strips currency signs and commas.
      */
-    public static BigDecimal numvalC(String value, String currencySign) {
+    public static Decimal numvalC(String value, String currencySign) {
         String s = value.trim()
             .replace(currencySign, "")
             .replace(",", "")
             .replace(" ", "");
-        if (s.isEmpty()) return BigDecimal.ZERO;
+        if (s.isEmpty()) return Decimal.ZERO;
         if (s.endsWith("-")) s = "-" + s.substring(0, s.length() - 1);
         else if (s.endsWith("+")) s = s.substring(0, s.length() - 1);
         try {
-            return new BigDecimal(s);
+            return Decimal.wrap(new BigDecimal(s));
         } catch (NumberFormatException e) {
-            return BigDecimal.ZERO;
+            return Decimal.ZERO;
         }
     }
 
     /** FUNCTION NUMVAL-C with default currency "$". */
-    public static BigDecimal numvalC(String value) {
+    public static Decimal numvalC(String value) {
         return numvalC(value, "$");
     }
 
     // ── Numeric functions ───────────────────────────────────────────
 
     /** FUNCTION MOD — modulo (always non-negative). */
-    public static BigDecimal mod(BigDecimal a, BigDecimal b) {
+    public static Decimal mod(Decimal a, Decimal b) {
         // COBOL MOD: a - b * FUNCTION INTEGER(a / b)
-        BigDecimal quotient = a.divide(b, 0, RoundingMode.FLOOR);
-        return a.subtract(b.multiply(quotient));
+        BigDecimal av = a.toBigDecimal();
+        BigDecimal bv = b.toBigDecimal();
+        BigDecimal quotient = av.divide(bv, 0, RoundingMode.FLOOR);
+        return Decimal.wrap(av.subtract(bv.multiply(quotient)));
     }
 
     /** FUNCTION REM — remainder (sign matches dividend). */
-    public static BigDecimal rem(BigDecimal a, BigDecimal b) {
-        return a.remainder(b);
+    public static Decimal rem(Decimal a, Decimal b) {
+        return Decimal.wrap(a.toBigDecimal().remainder(b.toBigDecimal()));
     }
 
     /** FUNCTION INTEGER — greatest integer not exceeding the value (floor). */
-    public static BigDecimal integer(BigDecimal value) {
-        return value.setScale(0, RoundingMode.FLOOR);
+    public static Decimal integer(Decimal value) {
+        return Decimal.wrap(value.toBigDecimal().setScale(0, RoundingMode.FLOOR));
     }
 
     /** FUNCTION INTEGER-PART — truncate toward zero. */
-    public static BigDecimal integerPart(BigDecimal value) {
-        return value.setScale(0, RoundingMode.DOWN);
+    public static Decimal integerPart(Decimal value) {
+        return Decimal.wrap(value.toBigDecimal().setScale(0, RoundingMode.DOWN));
     }
 
     /** FUNCTION ABS — absolute value. */
-    public static BigDecimal abs(BigDecimal value) {
-        return value.abs();
+    public static Decimal abs(Decimal value) {
+        return Decimal.wrap(value.toBigDecimal().abs());
     }
 
     /** FUNCTION MAX — maximum of a set of values. */
-    public static BigDecimal max(BigDecimal... values) {
-        BigDecimal max = values[0];
+    public static Decimal max(Decimal... values) {
+        Decimal max = values[0];
         for (int i = 1; i < values.length; i++) {
             if (values[i].compareTo(max) > 0) max = values[i];
         }
@@ -211,8 +213,8 @@ public final class Intrinsic {
     }
 
     /** FUNCTION MIN — minimum of a set of values. */
-    public static BigDecimal min(BigDecimal... values) {
-        BigDecimal min = values[0];
+    public static Decimal min(Decimal... values) {
+        Decimal min = values[0];
         for (int i = 1; i < values.length; i++) {
             if (values[i].compareTo(min) < 0) min = values[i];
         }
@@ -220,22 +222,24 @@ public final class Intrinsic {
     }
 
     /** FUNCTION MEAN — arithmetic mean. */
-    public static BigDecimal mean(BigDecimal... values) {
+    public static Decimal mean(Decimal... values) {
         BigDecimal sum = BigDecimal.ZERO;
-        for (BigDecimal v : values) sum = sum.add(v);
-        return sum.divide(BigDecimal.valueOf(values.length), 18, RoundingMode.HALF_UP);
+        for (Decimal v : values) sum = sum.add(v.toBigDecimal());
+        return Decimal.wrap(sum.divide(BigDecimal.valueOf(values.length), 18, RoundingMode.HALF_UP));
     }
 
     /** FUNCTION MEDIAN — middle value (sorts the array). */
-    public static BigDecimal median(BigDecimal... values) {
-        BigDecimal[] sorted = values.clone();
+    public static Decimal median(Decimal... values) {
+        Decimal[] sorted = values.clone();
         Arrays.sort(sorted);
         int n = sorted.length;
         if (n % 2 == 1) {
             return sorted[n / 2];
         }
-        return sorted[n / 2 - 1].add(sorted[n / 2])
-            .divide(BigDecimal.valueOf(2), 18, RoundingMode.HALF_UP);
+        BigDecimal mid1 = sorted[n / 2 - 1].toBigDecimal();
+        BigDecimal mid2 = sorted[n / 2].toBigDecimal();
+        return Decimal.wrap(mid1.add(mid2)
+            .divide(BigDecimal.valueOf(2), 18, RoundingMode.HALF_UP));
     }
 
     /** FUNCTION ORD — ordinal position of a character (1-based). */
@@ -254,17 +258,17 @@ public final class Intrinsic {
     }
 
     /** FUNCTION SQRT — square root. */
-    public static BigDecimal sqrt(BigDecimal value) {
-        return value.sqrt(MathContext.DECIMAL64);
+    public static Decimal sqrt(Decimal value) {
+        return Decimal.wrap(value.toBigDecimal().sqrt(MathContext.DECIMAL64));
     }
 
     /** FUNCTION LOG — natural logarithm. */
-    public static BigDecimal log(BigDecimal value) {
-        return BigDecimal.valueOf(Math.log(value.doubleValue()));
+    public static Decimal log(Decimal value) {
+        return Decimal.wrap(BigDecimal.valueOf(Math.log(value.toBigDecimal().doubleValue())));
     }
 
     /** FUNCTION LOG10 — base-10 logarithm. */
-    public static BigDecimal log10(BigDecimal value) {
-        return BigDecimal.valueOf(Math.log10(value.doubleValue()));
+    public static Decimal log10(Decimal value) {
+        return Decimal.wrap(BigDecimal.valueOf(Math.log10(value.toBigDecimal().doubleValue())));
     }
 }

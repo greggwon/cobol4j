@@ -18,9 +18,6 @@
  */
 package org.cobol4j;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
-
 /**
  * A live reference to a field within a Record's byte buffer.
  * <p>
@@ -40,9 +37,9 @@ import java.math.RoundingMode;
  *
  * // Use as by-reference handles — fluent chaining
  * name.move("JOHN DOE");
- * balance.move(new BigDecimal("50000.00"))
- *        .add(new BigDecimal("100.00"))
- *        .subtract(new BigDecimal("25.50"));
+ * balance.move(Decimal.of("50000.00"))
+ *        .add(Decimal.of("100.00"))
+ *        .subtract(Decimal.of("25.50"));
  * status.set("ACTIVE");
  *
  * // Pass to SORT, SEARCH, GIVING, CALL — real by-reference
@@ -97,8 +94,8 @@ public final class Field {
         return getString().trim();
     }
 
-    /** Get the numeric value as BigDecimal. */
-    public BigDecimal get() {
+    /** Get the numeric value as Decimal. */
+    public Decimal get() {
         return record.getDecimal(def.name());
     }
 
@@ -121,7 +118,7 @@ public final class Field {
     }
 
     /** MOVE a numeric value. */
-    public Field move(BigDecimal value) {
+    public Field move(Decimal value) {
         record.move(def.name(), value);
         return this;
     }
@@ -132,11 +129,6 @@ public final class Field {
         return this;
     }
 
-    /** MOVE a double value. */
-    public Field move(double value) {
-        record.move(def.name(), value);
-        return this;
-    }
 
     /** MOVE from another field (by reference). */
     public Field move(Field source) {
@@ -158,52 +150,52 @@ public final class Field {
 
     // ── Arithmetic — fluent, returns this ───────────────────────────
 
-    public Field add(BigDecimal value) {
+    public Field add(Decimal value) {
         record.add(def.name(), value);
         return this;
     }
 
-    public Field add(BigDecimal value, SizeErrorHandler handler) {
+    public Field add(Decimal value, SizeErrorHandler handler) {
         record.add(def.name(), value, handler);
         return this;
     }
 
-    public Field subtract(BigDecimal value) {
+    public Field subtract(Decimal value) {
         record.subtract(def.name(), value);
         return this;
     }
 
-    public Field subtract(BigDecimal value, SizeErrorHandler handler) {
+    public Field subtract(Decimal value, SizeErrorHandler handler) {
         record.subtract(def.name(), value, handler);
         return this;
     }
 
-    public Field multiply(BigDecimal value) {
+    public Field multiply(Decimal value) {
         record.multiply(def.name(), value);
         return this;
     }
 
-    public Field multiply(BigDecimal value, SizeErrorHandler handler) {
+    public Field multiply(Decimal value, SizeErrorHandler handler) {
         record.multiply(def.name(), value, handler);
         return this;
     }
 
-    public Field divide(BigDecimal value) {
+    public Field divide(Decimal value) {
         record.divide(def.name(), value);
         return this;
     }
 
-    public Field divide(BigDecimal value, SizeErrorHandler handler) {
+    public Field divide(Decimal value, SizeErrorHandler handler) {
         record.divide(def.name(), value, handler);
         return this;
     }
 
-    public Field compute(BigDecimal value) {
+    public Field compute(Decimal value) {
         record.compute(def.name(), value);
         return this;
     }
 
-    public Field compute(BigDecimal value, SizeErrorHandler handler) {
+    public Field compute(Decimal value, SizeErrorHandler handler) {
         record.compute(def.name(), value, handler);
         return this;
     }
@@ -234,7 +226,7 @@ public final class Field {
         return getString().equals(value);
     }
 
-    public boolean equalTo(BigDecimal value) {
+    public boolean equalTo(Decimal value) {
         return get().compareTo(value) == 0;
     }
 
@@ -245,11 +237,11 @@ public final class Field {
         return getString().equals(other.getString());
     }
 
-    public boolean greaterThan(BigDecimal value) {
+    public boolean greaterThan(Decimal value) {
         return get().compareTo(value) > 0;
     }
 
-    public boolean lessThan(BigDecimal value) {
+    public boolean lessThan(Decimal value) {
         return get().compareTo(value) < 0;
     }
 

@@ -346,7 +346,19 @@ public final class Parser {
             consumeStatementEnd();
             return new Statement.MoveCorresponding(source, target);
         }
-        String source = parseValueLiteral();
+        // Handle MOVE FUNCTION xxx TO ... (intrinsic function call)
+        String source;
+        if (peek("FUNCTION")) {
+            advance(); // consume FUNCTION
+            StringBuilder funcExpr = new StringBuilder("FUNCTION ");
+            while (!atEnd() && !peek("TO")) {
+                funcExpr.append(current().value());
+                advance();
+            }
+            source = funcExpr.toString();
+        } else {
+            source = parseValueLiteral();
+        }
         expect("TO");
         List<String> targets = new ArrayList<>();
         while (!atEnd() && !atPeriod() && !isVerb(current().value())) {

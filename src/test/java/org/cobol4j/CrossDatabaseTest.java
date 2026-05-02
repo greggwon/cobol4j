@@ -21,7 +21,7 @@ package org.cobol4j;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
-import java.math.BigDecimal;
+import org.cobol4j.Decimal;
 import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -87,7 +87,7 @@ class CrossDatabaseTest {
 
         // INSERT via host variables
         SqlSession.work(factory, session -> {
-            rec.move("ID", 1L).move("NAME", "ALICE").move("AMOUNT", new BigDecimal("1500.00"));
+            rec.move("ID", 1L).move("NAME", "ALICE").move("AMOUNT", Decimal.of("1500.00"));
             session.sql().execute("INSERT INTO CUSTOMERS (ID, NAME, AMOUNT) VALUES (?, ?, ?)")
                 .param(rec, "ID")
                 .param(rec, "NAME")
@@ -104,7 +104,7 @@ class CrossDatabaseTest {
                 .execute();
             assertTrue(session.isSuccess());
             assertEquals("ALICE", rec.getString("NAME").trim());
-            assertEquals(0, new BigDecimal("1500.00").compareTo(rec.getDecimal("AMOUNT")));
+            assertTrue(rec.getDecimal("AMOUNT").equalTo(Decimal.of("1500.00")));
         });
     }
 
@@ -133,7 +133,7 @@ class CrossDatabaseTest {
                 "SELECT NAME, AMOUNT FROM ITEMS ORDER BY NAME");
 
             session.sql().open(cursor);
-            rec.move("TOTAL", BigDecimal.ZERO);
+            rec.move("TOTAL", Decimal.ZERO);
             int count = 0;
 
             session.sql().fetch(cursor).into(rec, "NAME", "AMOUNT").execute();
@@ -146,7 +146,7 @@ class CrossDatabaseTest {
 
             assertEquals(3, count);
             // 1.50 + 2.75 + 3.25 = 7.50
-            assertEquals(0, new BigDecimal("7.50").compareTo(rec.getDecimal("TOTAL")));
+            assertTrue(rec.getDecimal("TOTAL").equalTo(Decimal.of("7.50")));
         });
     }
 
@@ -169,7 +169,7 @@ class CrossDatabaseTest {
         // UPDATE
         SqlSession.work(factory, session -> {
             session.sql().execute("UPDATE ACCOUNTS SET BALANCE = ? WHERE ID = ?")
-                .param(new BigDecimal("1500.00"))
+                .param(Decimal.of("1500.00"))
                 .param(1)
                 .execute();
             assertTrue(session.isSuccess());
@@ -182,7 +182,7 @@ class CrossDatabaseTest {
                 .param(1)
                 .into(rec, "AMT")
                 .execute();
-            assertEquals(0, new BigDecimal("1500.00").compareTo(rec.getDecimal("AMT")));
+            assertTrue(rec.getDecimal("AMT").equalTo(Decimal.of("1500.00")));
         });
 
         // DELETE

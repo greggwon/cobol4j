@@ -60,8 +60,14 @@ public final class JavaEmitter {
     private void emitHeader() {
         line("package generated;");
         line("");
-        line("import org.cobol4j.*;");
-        line("import java.math.BigDecimal;");
+        line("import org.cobol4j.Record;");
+        line("import org.cobol4j.Program;");
+        line("import org.cobol4j.ProgramContext;");
+        line("import org.cobol4j.Arithmetic;");
+        line("import org.cobol4j.CobolFile;");
+        line("import org.cobol4j.SizeErrorHandler;");
+        line("import org.cobol4j.Field;");
+        line("import org.cobol4j.Decimal;");
         line("");
     }
 
@@ -253,7 +259,7 @@ public final class JavaEmitter {
 
     private void emitAdd(Statement.Add a) {
         String value = a.sources().size() == 1 ? emitValueExpr(a.sources().get(0))
-            : "new BigDecimal(\"" + a.sources().get(0) + "\")";
+            : "Decimal.of(\"" + a.sources().get(0) + "\")";
 
         if (a.giving() != null) {
             line("Arithmetic.add(" + value + ", " + fieldGet(a.to()) + ")");
@@ -305,7 +311,7 @@ public final class JavaEmitter {
     }
 
     private void emitCompute(Statement.Compute c) {
-        // Convert COBOL arithmetic expression to Java BigDecimal expression
+        // Convert COBOL arithmetic expression to Decimal expression
         String expr = convertArithmeticExpr(c.expression());
         line(recRef(c.target()) + ".compute(\"" + c.target() + "\", " + expr + ");");
     }
@@ -438,22 +444,22 @@ public final class JavaEmitter {
         if (val == null) return "null";
         if (val.startsWith("\"")) return val; // string literal
         if (val.equals("SPACES") || val.equals("SPACE")) return "\"\"";
-        if (val.equals("ZEROS") || val.equals("ZEROES")) return "BigDecimal.ZERO";
-        if (val.matches("-?\\d+\\.?\\d*")) return "new BigDecimal(\"" + val + "\")";
+        if (val.equals("ZEROS") || val.equals("ZEROES")) return "Decimal.ZERO";
+        if (val.matches("-?\\d+\\.?\\d*")) return "Decimal.of(\"" + val + "\")";
         // Assume it's a field reference
         return fieldGet(val);
     }
 
     private String fieldGet(String fieldName) {
         if (fieldName == null) return "null";
-        if (fieldName.matches("-?\\d+\\.?\\d*")) return "new BigDecimal(\"" + fieldName + "\")";
+        if (fieldName.matches("-?\\d+\\.?\\d*")) return "Decimal.of(\"" + fieldName + "\")";
         return recRef(fieldName) + ".getDecimal(\"" + fieldName + "\")";
     }
 
     private String convertArithmeticExpr(String expr) {
         // Simple: wrap the whole expression as a BigDecimal computation comment
         // A real implementation would parse the expression tree
-        return "new BigDecimal(\"0\") /* TODO: " + expr + " */";
+        return "Decimal.of(\"0\") /* TODO: " + expr + " */";
     }
 
     private String emitSizeErrorHandler(List<Statement> onErr, List<Statement> notErr) {

@@ -136,19 +136,18 @@ public final class CobolSort {
         for (SortKey key : keys) {
             FieldDef fd = sortRecord.fieldDef(key.fieldName);
             Comparator<byte[]> keyComp = (recA, recB) -> {
-                sortRecord.loadFrom(recA);
-                String valA = fd.isNumeric()
-                    ? sortRecord.getDecimal(key.fieldName).toPlainString()
-                    : sortRecord.getString(key.fieldName);
-                sortRecord.loadFrom(recB);
-                String valB = fd.isNumeric()
-                    ? sortRecord.getDecimal(key.fieldName).toPlainString()
-                    : sortRecord.getString(key.fieldName);
-
                 int cmp;
                 if (fd.isNumeric()) {
-                    cmp = new java.math.BigDecimal(valA).compareTo(new java.math.BigDecimal(valB));
+                    sortRecord.loadFrom(recA);
+                    Decimal valA = sortRecord.getDecimal(key.fieldName);
+                    sortRecord.loadFrom(recB);
+                    Decimal valB = sortRecord.getDecimal(key.fieldName);
+                    cmp = valA.compareTo(valB);
                 } else {
+                    sortRecord.loadFrom(recA);
+                    String valA = sortRecord.getString(key.fieldName);
+                    sortRecord.loadFrom(recB);
+                    String valB = sortRecord.getString(key.fieldName);
                     cmp = valA.compareTo(valB);
                 }
                 return key.ascending ? cmp : -cmp;

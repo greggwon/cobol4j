@@ -138,7 +138,7 @@ public final class Variable<T> {
             if (type == VType.TEXT) {
                 return (T) boundRecord.getString(boundField);
             } else {
-                return (T) Decimal.wrap(boundRecord.getDecimal(boundField));
+                return (T) boundRecord.getDecimal(boundField);
             }
         }
         return value;
@@ -151,7 +151,7 @@ public final class Variable<T> {
 
         if (boundRecord != null) {
             if (newValue instanceof Decimal d) {
-                boundRecord.move(boundField, d.toBigDecimal());
+                boundRecord.move(boundField, d);
             } else if (newValue instanceof String s) {
                 boundRecord.move(boundField, s);
             }

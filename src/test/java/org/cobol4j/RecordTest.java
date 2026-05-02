@@ -19,7 +19,7 @@
 package org.cobol4j;
 
 import org.junit.jupiter.api.Test;
-import java.math.BigDecimal;
+import org.cobol4j.Decimal;
 import static org.junit.jupiter.api.Assertions.*;
 
 class RecordTest {
@@ -53,7 +53,7 @@ class RecordTest {
             .build();
 
         rec.move("AMT", 123L);
-        assertEquals(new BigDecimal("123"), rec.getDecimal("AMT"));
+        assertTrue(rec.getDecimal("AMT").equalTo(Decimal.of("123")));
     }
 
     @Test
@@ -62,9 +62,8 @@ class RecordTest {
             .pic("BALANCE", "S9(7)V99")
             .build();
 
-        rec.move("BALANCE", new BigDecimal("12345.67"));
-        BigDecimal result = rec.getDecimal("BALANCE");
-        assertEquals(0, new BigDecimal("12345.67").compareTo(result));
+        rec.move("BALANCE", Decimal.of("12345.67"));
+        assertTrue(rec.getDecimal("BALANCE").equalTo(Decimal.of("12345.67")));
     }
 
     @Test
@@ -73,9 +72,8 @@ class RecordTest {
             .pic("BALANCE", "S9(7)V99")
             .build();
 
-        rec.move("BALANCE", new BigDecimal("-500.25"));
-        BigDecimal result = rec.getDecimal("BALANCE");
-        assertEquals(0, new BigDecimal("-500.25").compareTo(result));
+        rec.move("BALANCE", Decimal.of("-500.25"));
+        assertTrue(rec.getDecimal("BALANCE").equalTo(Decimal.of("-500.25")));
     }
 
     // ── COMP-3 (packed decimal) ─────────────────────────────────────
@@ -86,8 +84,8 @@ class RecordTest {
             .pic("AMT", "S9(7)V99").comp3()
             .build();
 
-        rec.move("AMT", new BigDecimal("12345.67"));
-        assertEquals(0, new BigDecimal("12345.67").compareTo(rec.getDecimal("AMT")));
+        rec.move("AMT", Decimal.of("12345.67"));
+        assertTrue(rec.getDecimal("AMT").equalTo(Decimal.of("12345.67")));
     }
 
     @Test
@@ -96,8 +94,8 @@ class RecordTest {
             .pic("AMT", "S9(5)V99").comp3()
             .build();
 
-        rec.move("AMT", new BigDecimal("-999.99"));
-        assertEquals(0, new BigDecimal("-999.99").compareTo(rec.getDecimal("AMT")));
+        rec.move("AMT", Decimal.of("-999.99"));
+        assertTrue(rec.getDecimal("AMT").equalTo(Decimal.of("-999.99")));
     }
 
     // ── COMP (binary) ───────────────────────────────────────────────
@@ -257,9 +255,9 @@ class RecordTest {
             .pic("TOTAL", "S9(5)V99")
             .build();
 
-        rec.move("TOTAL", new BigDecimal("100.00"));
-        rec.add("TOTAL", new BigDecimal("50.25"));
-        assertEquals(0, new BigDecimal("150.25").compareTo(rec.getDecimal("TOTAL")));
+        rec.move("TOTAL", Decimal.of("100.00"));
+        rec.add("TOTAL", Decimal.of("50.25"));
+        assertTrue(rec.getDecimal("TOTAL").equalTo(Decimal.of("150.25")));
     }
 
     @Test
@@ -268,9 +266,9 @@ class RecordTest {
             .pic("TOTAL", "S9(5)V99")
             .build();
 
-        rec.move("TOTAL", new BigDecimal("200.00"));
-        rec.subtract("TOTAL", new BigDecimal("75.50"));
-        assertEquals(0, new BigDecimal("124.50").compareTo(rec.getDecimal("TOTAL")));
+        rec.move("TOTAL", Decimal.of("200.00"));
+        rec.subtract("TOTAL", Decimal.of("75.50"));
+        assertTrue(rec.getDecimal("TOTAL").equalTo(Decimal.of("124.50")));
     }
 
     @Test
@@ -279,9 +277,9 @@ class RecordTest {
             .pic("PRICE", "S9(5)V99")
             .build();
 
-        rec.move("PRICE", new BigDecimal("10.00"));
-        rec.multiply("PRICE", new BigDecimal("3"));
-        assertEquals(0, new BigDecimal("30.00").compareTo(rec.getDecimal("PRICE")));
+        rec.move("PRICE", Decimal.of("10.00"));
+        rec.multiply("PRICE", Decimal.of("3"));
+        assertTrue(rec.getDecimal("PRICE").equalTo(Decimal.of("30.00")));
     }
 
     @Test
@@ -290,10 +288,10 @@ class RecordTest {
             .pic("AMT", "S9(5)V99")
             .build();
 
-        rec.move("AMT", new BigDecimal("100.00"));
-        rec.divide("AMT", new BigDecimal("3"));
+        rec.move("AMT", Decimal.of("100.00"));
+        rec.divide("AMT", Decimal.of("3"));
         // 100/3 = 33.33... truncated to 2 decimal places = 33.33
-        assertEquals(0, new BigDecimal("33.33").compareTo(rec.getDecimal("AMT")));
+        assertTrue(rec.getDecimal("AMT").equalTo(Decimal.of("33.33")));
     }
 
     @Test
@@ -305,7 +303,7 @@ class RecordTest {
         rec.move("SMALL", 100L);
 
         boolean[] errorOccurred = {false};
-        rec.add("SMALL", new BigDecimal("999"),
+        rec.add("SMALL", Decimal.of("999"),
             SizeErrorHandler.onError(() -> errorOccurred[0] = true));
 
         assertTrue(errorOccurred[0]);
@@ -320,9 +318,9 @@ class RecordTest {
             .pic("ERR", "X")
             .build();
 
-        rec.move("AMT", new BigDecimal("500.00"));
+        rec.move("AMT", Decimal.of("500.00"));
 
-        rec.add("AMT", new BigDecimal("600.00"),
+        rec.add("AMT", Decimal.of("600.00"),
             SizeErrorHandler.of(
                 () -> rec.move("ERR", "Y"),  // ON SIZE ERROR
                 () -> rec.move("ERR", "N")   // NOT ON SIZE ERROR
@@ -333,25 +331,25 @@ class RecordTest {
     }
 
     @Test
-    void computeWithBigDecimal() {
+    void computeWithDecimal() {
         Record rec = Record.define("TEST")
             .pic("PRINCIPAL", "S9(7)V99")
             .pic("RATE",      "S9V9(4)")
             .pic("INTEREST",  "S9(7)V99")
             .build();
 
-        BigDecimal principal = new BigDecimal("50000.00");
-        BigDecimal rate = new BigDecimal("0.0525");
+        Decimal principal = Decimal.of("50000.00");
+        Decimal rate = Decimal.of("0.0525");
         rec.move("PRINCIPAL", principal);
         rec.move("RATE", rate);
 
         // COMPUTE INTEREST = PRINCIPAL * RATE / 12
-        BigDecimal interest = principal.multiply(rate)
-            .divide(BigDecimal.valueOf(12), 10, java.math.RoundingMode.HALF_EVEN);
+        Decimal interest = principal.multiply(rate)
+            .divide(Decimal.of(12), 10, java.math.RoundingMode.HALF_EVEN);
         rec.compute("INTEREST", interest);
 
         // 50000 * 0.0525 / 12 = 218.75
-        assertEquals(0, new BigDecimal("218.75").compareTo(rec.getDecimal("INTEREST")));
+        assertTrue(rec.getDecimal("INTEREST").equalTo(Decimal.of("218.75")));
     }
 
     // ── Figurative constants ────────────────────────────────────────
@@ -407,13 +405,13 @@ class RecordTest {
             .build();
 
         source.move("NAME", "JOHN");
-        source.move("BALANCE", new BigDecimal("500.00"));
+        source.move("BALANCE", Decimal.of("500.00"));
         source.move("CODE", "ABC");
 
         target.moveCorresponding(source);
 
         assertEquals("JOHN      ", target.getString("NAME"));
-        assertEquals(0, new BigDecimal("500.00").compareTo(target.getDecimal("BALANCE")));
+        assertTrue(target.getDecimal("BALANCE").equalTo(Decimal.of("500.00")));
         // STATUS shouldn't be touched — no corresponding field in source
         assertEquals(" ", target.getString("STATUS"));
     }
@@ -480,15 +478,15 @@ class RecordTest {
 
         // One fluent chain — no repetitive variable name
         rec.move("CUST-NAME", "JOHN DOE")
-           .move("CUST-BALANCE", new BigDecimal("50000.00"))
+           .move("CUST-BALANCE", Decimal.of("50000.00"))
            .set("ACTIVE")
-           .add("CUST-BALANCE", new BigDecimal("100.00"),
+           .add("CUST-BALANCE", Decimal.of("100.00"),
                SizeErrorHandler.of(
                    () -> rec.move("ERR-FLAG", "Y"),
                    () -> rec.move("ERR-FLAG", "N")));
 
         assertEquals("JOHN DOE            ", rec.getString("CUST-NAME"));
-        assertEquals(0, new BigDecimal("50100.00").compareTo(rec.getDecimal("CUST-BALANCE")));
+        assertTrue(rec.getDecimal("CUST-BALANCE").equalTo(Decimal.of("50100.00")));
         assertTrue(rec.is("ACTIVE"));
         assertEquals("N", rec.getString("ERR-FLAG").trim());
     }

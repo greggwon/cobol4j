@@ -18,7 +18,6 @@
  */
 package org.cobol4j;
 
-import java.math.BigDecimal;
 import java.util.*;
 import java.util.function.*;
 
@@ -67,7 +66,7 @@ public final class ProgramContext {
      * <pre>{@code
      * ctx.on(customerRecord)
      *    .move("NAME", "JOHN")
-     *    .move("BALANCE", new BigDecimal("100.00"))
+     *    .move("BALANCE", Decimal.of("100.00"))
      *    .set("ACTIVE");
      * }</pre>
      */
@@ -158,16 +157,16 @@ public final class ProgramContext {
     }
 
     /**
-     * PERFORM paragraph VARYING with BigDecimal (for decimal fields).
+     * PERFORM paragraph VARYING with Decimal (for decimal fields).
      */
     public ProgramContext performVarying(String paragraphName,
                                          Record record, String field,
-                                         BigDecimal from, BigDecimal by,
+                                         Decimal from, Decimal by,
                                          BooleanSupplier until) {
         record.move(field, from);
         while (!until.getAsBoolean()) {
             executeParagraph(paragraphName);
-            BigDecimal current = record.getDecimal(field);
+            Decimal current = record.getDecimal(field);
             record.move(field, current.add(by));
         }
         return this;
@@ -507,7 +506,7 @@ public final class ProgramContext {
          * WHEN TRUE — for EVALUATE TRUE, match when the boolean supplier is true.
          * <pre>{@code
          * ctx.evaluateTrue()
-         *    .whenTrue(() -> rec.getDecimal("BAL").compareTo(BigDecimal.ZERO) < 0,
+         *    .whenTrue(() -> rec.getDecimal("BAL").compareTo(Decimal.ZERO) < 0,
          *              () -> ctx.perform("NEGATIVE-BALANCE"))
          *    .whenTrue(() -> rec.is("ACTIVE"),
          *              () -> ctx.perform("ACTIVE-LOGIC"))

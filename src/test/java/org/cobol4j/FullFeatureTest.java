@@ -19,7 +19,7 @@
 package org.cobol4j;
 
 import org.junit.jupiter.api.Test;
-import java.math.BigDecimal;
+import org.cobol4j.Decimal;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
@@ -196,8 +196,8 @@ class FullFeatureTest {
                 customer.move("WS-CUST-ID", "C001")
                         .move("WS-FIRST-NAME", "ALICE")
                         .move("WS-LAST-NAME", "JOHNSON")
-                        .move("WS-CUST-BALANCE", new BigDecimal("50000.00"))
-                        .move("WS-CREDIT-LIMIT", new BigDecimal("100000.00"));
+                        .move("WS-CUST-BALANCE", Decimal.of("50000.00"))
+                        .move("WS-CREDIT-LIMIT", Decimal.of("100000.00"));
 
                 // SET conditions
                 customer.set("ACTIVE");
@@ -216,7 +216,7 @@ class FullFeatureTest {
             .paragraph("PROCESS-DATA", ctx -> {
                 // IF with level-88 condition
                 if (customer.is("ACTIVE")) {
-                    accum.add("WS-CUST-COUNT", BigDecimal.ONE);
+                    accum.add("WS-CUST-COUNT", Decimal.ONE);
                     ctx.perform("PROCESS-ORDERS");
                 } else {
                     ctx.display("Customer not active");
@@ -239,21 +239,21 @@ class FullFeatureTest {
             })
 
             .paragraph("PROCESS-SINGLE-ORDER", ctx -> {
-                accum.add("WS-TOTAL-SALES", new BigDecimal("1000.00"));
-                accum.add("WS-TOTAL-ITEMS", BigDecimal.TEN);
+                accum.add("WS-TOTAL-SALES", Decimal.of("1000.00"));
+                accum.add("WS-TOTAL-ITEMS", Decimal.TEN);
             })
 
             // ── COMPUTE-SUMMARIES ───────────────────────────────────
             .paragraph("COMPUTE-SUMMARIES", ctx -> {
                 // COMPUTE
-                BigDecimal avg = accum.getDecimal("WS-TOTAL-SALES")
-                    .divide(new BigDecimal(accum.getInt("WS-CUST-COUNT")),
+                Decimal avg = accum.getDecimal("WS-TOTAL-SALES")
+                    .divide(Decimal.of(accum.getInt("WS-CUST-COUNT")),
                             2, java.math.RoundingMode.HALF_UP);
                 accum.compute("WS-AVG-SALE", avg);
 
                 // MULTIPLY ... GIVING ... ROUNDED
                 Arithmetic.multiply(
-                    totalSales.get(), taxRate.get().toBigDecimal())
+                    totalSales.get(), taxRate.get())
                     .giving(accum.field("WS-TAX-AMOUNT"))
                     .rounded()
                     .execute();
@@ -270,8 +270,8 @@ class FullFeatureTest {
 
                 // DIVIDE ... GIVING ... REMAINDER
                 Arithmetic.divide(
-                    Decimal.of(accum.getInt("WS-TOTAL-ITEMS")).toBigDecimal(),
-                    new BigDecimal("3"))
+                    Decimal.of(accum.getInt("WS-TOTAL-ITEMS")),
+                    Decimal.of("3"))
                     .giving(quotient)
                     .remainder(remainder)
                     .execute();
@@ -355,7 +355,7 @@ class FullFeatureTest {
                             {"CHARLIE", "300.00"}, {"ALICE", "100.00"}, {"BOB", "200.00"}
                         }) {
                             sortRec.move("WS-SORT-NAME", item[0]);
-                            sortRec.move("WS-SORT-AMOUNT", new BigDecimal(item[1]));
+                            sortRec.move("WS-SORT-AMOUNT", Decimal.of(item[1]));
                             input.release();
                         }
                     })
@@ -411,11 +411,11 @@ class FullFeatureTest {
         assertEquals("JOHNSON", customer.getString("WS-LAST-NAME").trim());
 
         // --- COMP-3 (packed decimal) ---
-        assertEquals(0, new BigDecimal("50000.00").compareTo(
+        assertEquals(0, Decimal.of("50000.00").compareTo(
             customer.getDecimal("WS-CUST-BALANCE")));
 
         // --- COMP (binary) ---
-        assertEquals(0, new BigDecimal("100000.00").compareTo(
+        assertEquals(0, Decimal.of("100000.00").compareTo(
             customer.getDecimal("WS-CREDIT-LIMIT")));
 
         // --- Level-88 conditions ---
@@ -437,7 +437,7 @@ class FullFeatureTest {
         assertEquals("C001", customer.getString("WS-CUST-ID").trim()); // NOT "WRONG"
 
         // --- PERFORM TIMES ---
-        assertEquals(0, new BigDecimal("5000.00").compareTo(
+        assertEquals(0, Decimal.of("5000.00").compareTo(
             accum.getDecimal("WS-TOTAL-SALES"))); // 5 * 1000
 
         // --- Accumulator count ---
@@ -445,17 +445,17 @@ class FullFeatureTest {
         assertEquals(50, accum.getInt("WS-TOTAL-ITEMS")); // 5 * 10
 
         // --- COMPUTE (average) ---
-        assertEquals(0, new BigDecimal("5000.00").compareTo(
+        assertEquals(0, Decimal.of("5000.00").compareTo(
             accum.getDecimal("WS-AVG-SALE"))); // 5000 / 1
 
         // --- MULTIPLY GIVING ROUNDED ---
         // 5000.00 * 0.08 = 400.00
-        assertEquals(0, new BigDecimal("400.00").compareTo(
+        assertEquals(0, Decimal.of("400.00").compareTo(
             accum.getDecimal("WS-TAX-AMOUNT")));
 
         // --- ADD GIVING (grand total) ---
         // 5000.00 + 400.00 = 5400.00
-        assertEquals(0, new BigDecimal("5400.00").compareTo(
+        assertEquals(0, Decimal.of("5400.00").compareTo(
             accum.getDecimal("WS-GRAND-TOTAL")));
 
         // --- ON SIZE ERROR (should NOT have triggered) ---
@@ -502,11 +502,11 @@ class FullFeatureTest {
         assertEquals(10, Intrinsic.lengthInt(customer, "WS-CUST-ID"));
         assertEquals("ALICE", Intrinsic.upperCase("alice"));
         assertEquals("ecila", Intrinsic.reverse("alice"));
-        assertEquals(0, BigDecimal.valueOf(2).compareTo(
-            Intrinsic.mod(BigDecimal.valueOf(17), BigDecimal.valueOf(5))));
+        assertEquals(Decimal.of(2),
+            Intrinsic.mod(Decimal.of(17), Decimal.of(5)));
 
         // --- Numeric edited ---
-        stringWork.move("WS-DISPLAY-AMT", new BigDecimal("12345.67"));
+        stringWork.move("WS-DISPLAY-AMT", Decimal.of("12345.67"));
         String edited = stringWork.getString("WS-DISPLAY-AMT");
         // Numeric edited field produces formatted output (not raw digits)
         assertNotNull(edited);
@@ -562,7 +562,7 @@ class FullFeatureTest {
                 .execute();
 
             assertTrue(session.isSuccess());
-            assertEquals(0, new BigDecimal("4000.00").compareTo(
+            assertEquals(0, Decimal.of("4000.00").compareTo(
                 sqlRec.getDecimal("SQL-TOTAL")));
         });
 
@@ -587,7 +587,7 @@ class FullFeatureTest {
         // --- DML INSERT with host variable binding ---
         SqlSession.work(factory, session -> {
             sqlRec.move("SQL-CUST-ID", "C001");
-            sqlRec.move("SQL-AMOUNT", new BigDecimal("3000.00"));
+            sqlRec.move("SQL-AMOUNT", Decimal.of("3000.00"));
 
             session.sql()
                 .execute("INSERT INTO ORDERS (ID, CUST_ID, AMOUNT) VALUES (?, ?, ?)")
@@ -616,7 +616,7 @@ class FullFeatureTest {
         SqlSession.work(factory, session -> {
             session.sql()
                 .execute("UPDATE ORDERS SET AMOUNT = ? WHERE ID = ?")
-                .param(new BigDecimal("9999.99"))
+                .param(Decimal.of("9999.99"))
                 .param(4)
                 .execute();
 

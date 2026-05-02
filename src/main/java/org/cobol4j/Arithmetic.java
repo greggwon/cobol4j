@@ -21,6 +21,8 @@ package org.cobol4j;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
+// Note: BigDecimal is retained for internal calculations via Decimal.toBigDecimal()
+
 /**
  * COBOL arithmetic with GIVING, ROUNDED, and REMAINDER support.
  * <p>
@@ -59,9 +61,9 @@ public final class Arithmetic {
     private Arithmetic() {}
 
     /** ADD operands, producing a sum to store via GIVING. */
-    public static GivingBuilder add(BigDecimal... operands) {
+    public static GivingBuilder add(Decimal... operands) {
         BigDecimal sum = BigDecimal.ZERO;
-        for (BigDecimal op : operands) sum = sum.add(op);
+        for (Decimal op : operands) sum = sum.add(op.toBigDecimal());
         return new GivingBuilder(sum);
     }
 
@@ -69,14 +71,14 @@ public final class Arithmetic {
      * SUBTRACT subtrahend FROM minuend, producing a difference.
      * {@code SUBTRACT A FROM B GIVING C} → {@code subtract(A, B).giving(C)}
      */
-    public static GivingBuilder subtract(BigDecimal subtrahend, BigDecimal minuend) {
-        return new GivingBuilder(minuend.subtract(subtrahend));
+    public static GivingBuilder subtract(Decimal subtrahend, Decimal minuend) {
+        return new GivingBuilder(minuend.toBigDecimal().subtract(subtrahend.toBigDecimal()));
     }
 
     /** MULTIPLY operands, producing a product. */
-    public static GivingBuilder multiply(BigDecimal... operands) {
+    public static GivingBuilder multiply(Decimal... operands) {
         BigDecimal product = BigDecimal.ONE;
-        for (BigDecimal op : operands) product = product.multiply(op);
+        for (Decimal op : operands) product = product.multiply(op.toBigDecimal());
         return new GivingBuilder(product);
     }
 
@@ -84,8 +86,8 @@ public final class Arithmetic {
      * DIVIDE dividend BY divisor.
      * {@code DIVIDE A BY B GIVING C} → {@code divide(A, B).giving(C)}
      */
-    public static DivideBuilder divide(BigDecimal dividend, BigDecimal divisor) {
-        return new DivideBuilder(dividend, divisor);
+    public static DivideBuilder divide(Decimal dividend, Decimal divisor) {
+        return new DivideBuilder(dividend.toBigDecimal(), divisor.toBigDecimal());
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -139,7 +141,7 @@ public final class Arithmetic {
             if (intDigitCount > pic.integerDigits()) {
                 handler.onSizeError();
             } else {
-                rec.compute(fd.name(), fitted);
+                rec.compute(fd.name(), Decimal.wrap(fitted));
                 handler.onSuccess();
             }
         }
@@ -206,13 +208,13 @@ public final class Arithmetic {
                 return;
             }
 
-            givingField.record().compute(givingField.def().name(), fitted);
+            givingField.record().compute(givingField.def().name(), Decimal.wrap(fitted));
 
             // REMAINDER = dividend - (truncated_quotient * divisor)
             if (remainderField != null) {
                 BigDecimal truncatedQ = fitted.setScale(scale, RoundingMode.DOWN);
                 BigDecimal remainder = dividend.subtract(truncatedQ.multiply(divisor));
-                remainderField.record().compute(remainderField.def().name(), remainder);
+                remainderField.record().compute(remainderField.def().name(), Decimal.wrap(remainder));
             }
 
             handler.onSuccess();

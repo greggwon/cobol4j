@@ -19,7 +19,7 @@
 package org.cobol4j;
 
 import org.junit.jupiter.api.Test;
-import java.math.BigDecimal;
+import org.cobol4j.Decimal;
 import java.util.ArrayList;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
@@ -97,7 +97,7 @@ class ProgramTest {
                    .stopRun();
             })
             .paragraph("INCREMENT", ctx ->
-                rec.add("COUNT", BigDecimal.ONE))
+                rec.add("COUNT", Decimal.ONE))
             .build();
 
         program.run();
@@ -132,7 +132,7 @@ class ProgramTest {
                 ctx.performTimes("ADD-ONE", 5).stopRun();
             })
             .paragraph("ADD-ONE", ctx ->
-                rec.add("COUNT", BigDecimal.ONE))
+                rec.add("COUNT", Decimal.ONE))
             .build();
 
         program.run();
@@ -153,13 +153,13 @@ class ProgramTest {
                    .stopRun();
             })
             .paragraph("ACCUMULATE", ctx ->
-                rec.add("TOTAL", new BigDecimal("100.00"))
-                   .add("COUNT", BigDecimal.ONE))
+                rec.add("TOTAL", Decimal.of("100.00"))
+                   .add("COUNT", Decimal.ONE))
             .build();
 
         program.run();
         assertEquals(10, rec.getInt("COUNT"));
-        assertEquals(0, new BigDecimal("1000.00").compareTo(rec.getDecimal("TOTAL")));
+        assertTrue(rec.getDecimal("TOTAL").equalTo(Decimal.of("1000.00")));
     }
 
     @Test
@@ -178,7 +178,7 @@ class ProgramTest {
             })
             .paragraph("ADD-IDX", ctx -> {
                 long idx = rec.getLong("IDX");
-                rec.add("TOTAL", BigDecimal.valueOf(idx));
+                rec.add("TOTAL", Decimal.of(idx));
             })
             .build();
 
@@ -201,7 +201,7 @@ class ProgramTest {
                    .stopRun();
             })
             .paragraph("INCREMENT", ctx ->
-                rec.add("COUNT", BigDecimal.ONE))
+                rec.add("COUNT", Decimal.ONE))
             .build();
 
         program.run();
@@ -218,7 +218,7 @@ class ProgramTest {
         Program program = Program.define("TEST")
             .paragraph("MAIN", ctx -> {
                 ctx.performUntil(() -> rec.getInt("N") >= 5, () ->
-                    rec.add("N", BigDecimal.ONE))
+                    rec.add("N", Decimal.ONE))
                    .stopRun();
             })
             .build();
@@ -336,7 +336,7 @@ class ProgramTest {
             .pic("BAL", "S9(5)V99")
             .build();
 
-        rec.move("NAME", "ALICE").move("BAL", new BigDecimal("1234.56"));
+        rec.move("NAME", "ALICE").move("BAL", Decimal.of("1234.56"));
 
         Program program = Program.define("TEST")
             .onDisplay(s -> {}) // suppress stdout
@@ -403,13 +403,13 @@ class ProgramTest {
                 // One fluent chain through the context
                 ctx.on(cust)
                    .move("CUST-NAME", "ACME CORP")
-                   .move("CUST-BAL", new BigDecimal("50000.00"))
+                   .move("CUST-BAL", Decimal.of("50000.00"))
                    .set("ACTIVE");
 
                 // Arithmetic chaining
                 ctx.on(cust)
-                   .add("CUST-BAL", new BigDecimal("5000.00"))
-                   .subtract("CUST-BAL", new BigDecimal("1500.00"));
+                   .add("CUST-BAL", Decimal.of("5000.00"))
+                   .subtract("CUST-BAL", Decimal.of("1500.00"));
 
                 // Context operations chain too
                 ctx.display("Name: ", cust.getString("CUST-NAME").trim())
@@ -421,7 +421,7 @@ class ProgramTest {
         program.run();
 
         assertTrue(cust.is("ACTIVE"));
-        assertEquals(0, new BigDecimal("53500.00").compareTo(cust.getDecimal("CUST-BAL")));
+        assertEquals(0, Decimal.of("53500.00").compareTo(cust.getDecimal("CUST-BAL")));
 
         List<String> output = program.context().displayOutput();
         assertEquals("Name: ACME CORP", output.get(0));
@@ -441,17 +441,17 @@ class ProgramTest {
             .build();
 
         // Preloaded amounts to process
-        BigDecimal[] amounts = {
-            new BigDecimal("100.00"), new BigDecimal("250.50"),
-            new BigDecimal("75.25"),  new BigDecimal("1000.00"),
-            new BigDecimal("325.75")
+        Decimal[] amounts = {
+            Decimal.of("100.00"), Decimal.of("250.50"),
+            Decimal.of("75.25"),  Decimal.of("1000.00"),
+            Decimal.of("325.75")
         };
 
         Program program = Program.define("ITEM-TOTAL")
             .workingStorage(ws)
             .onDisplay(s -> {})
             .paragraph("MAIN-LOGIC", ctx -> {
-                ws.move("WS-TOTAL", BigDecimal.ZERO)
+                ws.move("WS-TOTAL", Decimal.ZERO)
                   .move("WS-COUNT", (long) amounts.length);
 
                 ctx.performVarying("PROCESS-ITEM", ws, "WS-IDX", 1, 1,
@@ -472,7 +472,7 @@ class ProgramTest {
 
         assertEquals(5, ws.getInt("WS-COUNT"));
         // 100 + 250.50 + 75.25 + 1000 + 325.75 = 1751.50
-        assertEquals(0, new BigDecimal("1751.50").compareTo(ws.getDecimal("WS-TOTAL")));
+        assertEquals(0, Decimal.of("1751.50").compareTo(ws.getDecimal("WS-TOTAL")));
 
         List<String> output = program.context().displayOutput();
         assertEquals("Processed 5 items", output.get(0));

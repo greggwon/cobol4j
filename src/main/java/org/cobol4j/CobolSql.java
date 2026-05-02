@@ -24,6 +24,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
+// Note: BigDecimal retained for JDBC interop (ResultSet/PreparedStatement)
+
 /**
  * COBOL embedded SQL semantics over JDBC.
  * <p>
@@ -244,7 +246,7 @@ public final class CobolSql {
 
     /**
      * Read a ResultSet row into Record fields, mapping columns by position
-     * to the named fields. Numeric fields receive BigDecimal; alphanumeric
+     * to the named fields. Numeric fields receive Decimal; alphanumeric
      * fields receive String.
      */
     static void readInto(ResultSet rs, Record record, String[] fieldNames) throws SQLException {
@@ -252,7 +254,7 @@ public final class CobolSql {
             FieldDef fd = record.fieldDef(fieldNames[i]);
             if (fd.isNumeric()) {
                 BigDecimal val = rs.getBigDecimal(i + 1);
-                record.move(fieldNames[i], val != null ? val : BigDecimal.ZERO);
+                record.move(fieldNames[i], val != null ? Decimal.wrap(val) : Decimal.ZERO);
             } else {
                 String val = rs.getString(i + 1);
                 record.move(fieldNames[i], val != null ? val : "");
@@ -266,6 +268,8 @@ public final class CobolSql {
             Object p = params.get(i);
             if (p == null) {
                 stmt.setNull(i + 1, Types.VARCHAR);
+            } else if (p instanceof Decimal d) {
+                stmt.setBigDecimal(i + 1, d.toBigDecimal());
             } else if (p instanceof BigDecimal bd) {
                 stmt.setBigDecimal(i + 1, bd);
             } else if (p instanceof Integer n) {

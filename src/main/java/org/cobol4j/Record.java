@@ -110,26 +110,26 @@ public final class Record {
         return decodeDisplay(f, f.offsetForIndex(index));
     }
 
-    /** Get a numeric field's value as BigDecimal, respecting PIC scale. */
-    public BigDecimal getDecimal(String fieldName) {
+    /** Get a numeric field's value as Decimal, respecting PIC scale. */
+    public Decimal getDecimal(String fieldName) {
         FieldDef f = requireNumericField(fieldName);
-        return decodeNumeric(f, f.offset());
+        return Decimal.wrap(decodeNumeric(f, f.offset()));
     }
 
-    /** Get an OCCURS numeric element as BigDecimal. */
-    public BigDecimal getDecimal(String fieldName, int index) {
+    /** Get an OCCURS numeric element as Decimal. */
+    public Decimal getDecimal(String fieldName, int index) {
         FieldDef f = requireNumericField(fieldName);
-        return decodeNumeric(f, f.offsetForIndex(index));
+        return Decimal.wrap(decodeNumeric(f, f.offsetForIndex(index)));
     }
 
     /** Get a numeric field's value as long (integer portion, truncating decimals). */
     public long getLong(String fieldName) {
-        return getDecimal(fieldName).longValue();
+        return getDecimal(fieldName).toLong();
     }
 
     /** Get a numeric field's value as int. */
     public int getInt(String fieldName) {
-        return getDecimal(fieldName).intValue();
+        return getDecimal(fieldName).toInt();
     }
 
     /** Direct access to the field's raw bytes. Returns a copy. */
@@ -183,8 +183,24 @@ public final class Record {
         return this;
     }
 
-    /** MOVE a numeric value to a field. */
-    public Record move(String fieldName, BigDecimal value) {
+    /** MOVE a Decimal value to a field. */
+    public Record move(String fieldName, Decimal value) {
+        FieldDef f = requireField(fieldName);
+        if (f.isNumeric()) {
+            encodeNumeric(f, f.offset(), value.toBigDecimal());
+        } else {
+            moveToField(f, f.offset(), value.toString());
+        }
+        return this;
+    }
+
+    /** MOVE a numeric literal to a field. */
+    public Record move(String fieldName, long value) {
+        return move(fieldName, Decimal.of(value));
+    }
+
+    // Internal: accept BigDecimal for backward compat within the package
+    Record moveBigDecimal(String fieldName, BigDecimal value) {
         FieldDef f = requireField(fieldName);
         if (f.isNumeric()) {
             encodeNumeric(f, f.offset(), value);
@@ -192,16 +208,6 @@ public final class Record {
             moveToField(f, f.offset(), value.toPlainString());
         }
         return this;
-    }
-
-    /** MOVE a numeric literal to a field. */
-    public Record move(String fieldName, long value) {
-        return move(fieldName, BigDecimal.valueOf(value));
-    }
-
-    /** MOVE a double literal to a field. */
-    public Record move(String fieldName, double value) {
-        return move(fieldName, BigDecimal.valueOf(value));
     }
 
     /** MOVE from one field in a source record to a field in this record. */
@@ -215,8 +221,8 @@ public final class Record {
             moveAlphanumeric(target, target.offset(), val);
         } else if (target.isNumeric() && src.isNumeric()) {
             // Numeric to numeric: decimal-aligned
-            BigDecimal val = source.getDecimal(sourceField);
-            encodeNumeric(target, target.offset(), val);
+            Decimal val = source.getDecimal(sourceField);
+            encodeNumeric(target, target.offset(), val.toBigDecimal());
         } else if (target.isNumeric()) {
             // Alphanumeric to numeric: de-edit, treat as integer
             String val = source.getString(sourceField).trim();
@@ -484,70 +490,68 @@ public final class Record {
     // ═══════════════════════════════════════════════════════════════
 
     /** ADD value TO field. */
-    public Record add(String fieldName, BigDecimal value) {
+    public Record add(String fieldName, Decimal value) {
         return add(fieldName, value, SizeErrorHandler.silent());
     }
 
-    public Record add(String fieldName, BigDecimal value, SizeErrorHandler handler) {
+    public Record add(String fieldName, Decimal value, SizeErrorHandler handler) {
         FieldDef f = requireNumericField(fieldName);
         BigDecimal current = decodeNumeric(f, f.offset());
-        BigDecimal result = current.add(value);
+        BigDecimal result = current.add(value.toBigDecimal());
         storeWithSizeCheck(f, f.offset(), result, handler);
         return this;
     }
 
     /** SUBTRACT value FROM field. */
-    public Record subtract(String fieldName, BigDecimal value) {
+    public Record subtract(String fieldName, Decimal value) {
         return subtract(fieldName, value, SizeErrorHandler.silent());
     }
 
-    public Record subtract(String fieldName, BigDecimal value, SizeErrorHandler handler) {
+    public Record subtract(String fieldName, Decimal value, SizeErrorHandler handler) {
         FieldDef f = requireNumericField(fieldName);
         BigDecimal current = decodeNumeric(f, f.offset());
-        BigDecimal result = current.subtract(value);
+        BigDecimal result = current.subtract(value.toBigDecimal());
         storeWithSizeCheck(f, f.offset(), result, handler);
         return this;
     }
 
     /** MULTIPLY field BY value. */
-    public Record multiply(String fieldName, BigDecimal value) {
+    public Record multiply(String fieldName, Decimal value) {
         return multiply(fieldName, value, SizeErrorHandler.silent());
     }
 
-    public Record multiply(String fieldName, BigDecimal value, SizeErrorHandler handler) {
+    public Record multiply(String fieldName, Decimal value, SizeErrorHandler handler) {
         FieldDef f = requireNumericField(fieldName);
         BigDecimal current = decodeNumeric(f, f.offset());
-        BigDecimal result = current.multiply(value);
+        BigDecimal result = current.multiply(value.toBigDecimal());
         storeWithSizeCheck(f, f.offset(), result, handler);
         return this;
     }
 
     /** DIVIDE field BY value. */
-    public Record divide(String fieldName, BigDecimal value) {
+    public Record divide(String fieldName, Decimal value) {
         return divide(fieldName, value, SizeErrorHandler.silent());
     }
 
-    public Record divide(String fieldName, BigDecimal value, SizeErrorHandler handler) {
+    public Record divide(String fieldName, Decimal value, SizeErrorHandler handler) {
         FieldDef f = requireNumericField(fieldName);
         BigDecimal current = decodeNumeric(f, f.offset());
-        // Use enough precision to avoid ArithmeticException on non-terminating decimals
-        BigDecimal result = current.divide(value, f.pic().decimalDigits() + 5, RoundingMode.HALF_EVEN);
+        BigDecimal result = current.divide(value.toBigDecimal(), f.pic().decimalDigits() + 5, RoundingMode.HALF_EVEN);
         storeWithSizeCheck(f, f.offset(), result, handler);
         return this;
     }
 
     /**
-     * COMPUTE — store a pre-computed result into a field.
-     * The caller uses standard Java/BigDecimal arithmetic to compute the value;
-     * this method applies PIC constraints and size-error checking.
+     * COMPUTE — store a pre-computed Decimal result into a field.
+     * Applies PIC constraints and size-error checking.
      */
-    public Record compute(String fieldName, BigDecimal value) {
+    public Record compute(String fieldName, Decimal value) {
         return compute(fieldName, value, SizeErrorHandler.silent());
     }
 
-    public Record compute(String fieldName, BigDecimal value, SizeErrorHandler handler) {
+    public Record compute(String fieldName, Decimal value, SizeErrorHandler handler) {
         FieldDef f = requireNumericField(fieldName);
-        storeWithSizeCheck(f, f.offset(), value, handler);
+        storeWithSizeCheck(f, f.offset(), value.toBigDecimal(), handler);
         return this;
     }
 
