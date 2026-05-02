@@ -10,19 +10,126 @@ calls against a runtime that already understands COBOL semantics.** The transpil
 becomes a thin syntax-directed translator. All the hard behavioral correctness lives
 in one testable, versioned library.
 
+## Why No BigDecimal, No float, No double
+
+COBOL has **no floating point**. All COBOL arithmetic is fixed-point decimal — every
+digit position is defined by the PIC clause, every operation is exact, and there is
+no IEEE 754 mantissa anywhere in the system. A bank balance of `$100.10` is exactly
+`100.10`, not `100.09999999999999432...`.
+
+Java's `BigDecimal` can represent exact decimals, but it has a dangerous constructor:
+
+```java
+new BigDecimal(0.1)   // 0.1000000000000000055511151231257827021181583404541015625
+new BigDecimal("0.1") // 0.1 — exact
+```
+
+One typo — using the `double` constructor instead of the `String` constructor — and
+you've introduced the exact kind of mantissa error that COBOL's type system was
+designed to prevent.
+
+cobol4j eliminates this risk entirely. **The `Decimal` class is the only numeric value
+type in the public API.** There is no `BigDecimal` parameter or return type anywhere.
+There is no `float` or `double` parameter anywhere. `Decimal` can only be constructed
+from `String` or `long` — both exact representations:
+
+```java
+Decimal price = Decimal.of("19.99");   // exact — the only way to create a value
+Decimal qty   = Decimal.of(5);         // exact — integer literal
+Decimal total = price.multiply(qty);   // 99.95 — exact
+
+// These don't exist:
+// Decimal.of(0.1)      — NO double constructor
+// Decimal.of(19.99)    — NO double constructor
+// rec.move("F", 3.14)  — NO double parameter on any API method
+```
+
+`Decimal` values are immutable and weakly cached — repeated `Decimal.of("19.99")`
+calls return the same instance, reducing allocation pressure without leaking memory.
+
+All arithmetic is traceable via `ValueTracker`:
+
+```java
+Decimal.setTracker(new ValueTracker() {
+    @Override
+    public void onArithmetic(Decimal left, String op, Decimal right, Decimal result) {
+        auditLog.record(left + " " + op + " " + right + " = " + result);
+    }
+});
+// Every Decimal operation is now logged — complete audit trail for financial systems
+```
+
 ## Architecture
 
 ```
 COBOL Source  →  Transpiler (thin)  →  Java code using cobol4j DSL
                                             ↓
                                       cobol4j Runtime Library
+                                      ├── Decimal (exact numeric values, no float/double)
                                       ├── Record (byte-buffer backed data)
                                       ├── Field (by-reference handles)
+                                      ├── Variable (typed named handles)
                                       ├── Program / ProgramContext (control flow)
                                       ├── CobolSql / SqlSession (database)
                                       ├── CobolFile (file I/O)
                                       ├── Arithmetic, Intrinsic, Search, Sort
                                       └── Inspect, CobolString, CobolUnstring
+```
+
+## Runner — Transpile, Compile, and Execute COBOL Programs
+
+cobol4j includes a command-line runner that takes a COBOL source file and runs it
+directly — transpiling to Java, compiling in-process, and executing without any
+manual build steps.
+
+### Build the runner JAR
+
+```bash
+export JAVA_HOME=/path/to/jdk17
+mvn package -DskipTests
+```
+
+This produces `target/cobol4j-0.1.0-SNAPSHOT.jar` — a fat JAR containing the
+runtime library, transpiler, and runner.
+
+### Commands
+
+**Run** — transpile, compile, and execute immediately:
+
+```bash
+java -jar cobol4j.jar run CUSTORD.cbl
+```
+
+**Transpile** — generate Java source only:
+
+```bash
+java -jar cobol4j.jar transpile CUSTORD.cbl -o src/generated
+```
+
+**Build** — transpile, compile, and package as a standalone JAR:
+
+```bash
+java -jar cobol4j.jar build CUSTORD.cbl -o custord.jar
+java -jar custord.jar
+```
+
+### Example session
+
+```
+$ java -jar cobol4j.jar run payroll.cbl
+cobol4j: Reading payroll.cbl
+cobol4j: Transpiling...
+cobol4j: Compiling generated.Payroll...
+cobol4j: Running...
+────────────────────────────────────────────────────────────────
+=== PAYROLL REPORT ===
+Employee: ALICE JOHNSON
+Gross Pay: 5000.00
+Tax: 400.00
+Net Pay: 4600.00
+=== END REPORT ===
+────────────────────────────────────────────────────────────────
+cobol4j: Program completed.
 ```
 
 ## Quick Example
@@ -57,21 +164,21 @@ Record customerRecord = Record.define("CUSTOMER-RECORD")
     .build();
 
 customerRecord.move("CUST-NAME", "JOHN DOE")
-    .move("CUST-BALANCE", new BigDecimal("50000.00"))
+    .move("CUST-BALANCE", Decimal.of("50000.00"))
     .set("ACTIVE")
-    .add("CUST-BALANCE", new BigDecimal("100.00"),
+    .add("CUST-BALANCE", Decimal.of("100.00"),
         SizeErrorHandler.onError(this::errorRoutine));
 ```
 
-Or with Field references for by-reference semantics and less string repetition:
+Or with Field references for by-reference semantics:
 
 ```java
-Field name   = customerRecord.field("CUST-NAME");
+Field name    = customerRecord.field("CUST-NAME");
 Field balance = customerRecord.field("CUST-BALANCE");
 
 name.move("JOHN DOE");
-balance.move(new BigDecimal("50000.00"))
-       .add(new BigDecimal("100.00"),
+balance.move(Decimal.of("50000.00"))
+       .add(Decimal.of("100.00"),
            SizeErrorHandler.onError(this::errorRoutine));
 customerRecord.set("ACTIVE");
 ```
@@ -112,10 +219,6 @@ Record emp = Record.define("EMPLOYEE-RECORD")
     .build();
 ```
 
-The record allocates a contiguous byte buffer. Fields are views over byte ranges.
-Group items span their children. The layout is computed automatically — just like
-COBOL's compiler does.
-
 ### PIC Clauses and Usage
 
 | COBOL | cobol4j | Meaning |
@@ -130,44 +233,16 @@ COBOL's compiler does.
 
 ### MOVE — Type-Converting Copy
 
-COBOL's MOVE is not simple assignment. It's a type-converting, padding/truncating copy
-with rules that depend on the sending and receiving field categories.
-
-```cobol
-MOVE "JOHN" TO FIRST-NAME.           *> left-justified, space-padded to 15
-MOVE 12345.67 TO EMP-SALARY.         *> decimal-aligned, sign handled
-MOVE CORR SOURCE-REC TO TARGET-REC.  *> match fields by name
-MOVE SPACES TO EMP-NAME.             *> fill entire group with spaces
-MOVE ZEROS TO EMP-SALARY.            *> numeric zero
-MOVE HIGH-VALUES TO EMP-DEPT.        *> fill with 0xFF
-```
-
 ```java
-emp.move("FIRST-NAME", "JOHN");                  // left-justified, space-padded
-emp.move("EMP-SALARY", new BigDecimal("12345.67")); // decimal-aligned into COMP-3
-emp.moveCorresponding(sourceRec);                 // match by field name
-emp.moveSpaces("EMP-NAME");                       // fill group with spaces
-emp.moveZeros("EMP-SALARY");                      // numeric zero
-emp.moveHighValues("EMP-DEPT");                   // 0xFF fill
+emp.move("FIRST-NAME", "JOHN");                       // left-justified, space-padded
+emp.move("EMP-SALARY", Decimal.of("12345.67"));       // decimal-aligned into COMP-3
+emp.moveCorresponding(sourceRec);                      // match by field name
+emp.moveSpaces("EMP-NAME");                            // fill group with spaces
+emp.moveZeros("EMP-SALARY");                           // numeric zero
+emp.moveHighValues("EMP-DEPT");                        // 0xFF fill
 ```
-
-All MOVE rules (alphanumeric-to-numeric, numeric-to-alphanumeric, group moves,
-sign handling, truncation, decimal alignment) are implemented in the library.
-The transpiler just emits the corresponding `move()` call.
 
 ### REDEFINES — Union Types
-
-COBOL's REDEFINES lets the same bytes be interpreted as different field layouts,
-like a C union.
-
-```cobol
-01 DATE-RECORD.
-   05 DATE-FULL          PIC X(8).
-   05 DATE-PARTS REDEFINES DATE-FULL.
-      10 DATE-YEAR       PIC X(4).
-      10 DATE-MONTH      PIC X(2).
-      10 DATE-DAY        PIC X(2).
-```
 
 ```java
 Record rec = Record.define("DATE-RECORD")
@@ -180,7 +255,6 @@ Record rec = Record.define("DATE-RECORD")
     .build();
 
 rec.move("DATE-FULL-VAL", "20260430");
-// Reading through the redefines view — same bytes, different names:
 rec.getString("DATE-YEAR");   // "2026"
 rec.getString("DATE-MONTH");  // "04"
 rec.getString("DATE-DAY");    // "30"
@@ -188,116 +262,90 @@ rec.getString("DATE-DAY");    // "30"
 
 ### OCCURS — Arrays and Tables
 
-```cobol
-01 PRICE-TABLE.
-   05 PRICE-ENTRY OCCURS 100.
-      10 ITEM-CODE    PIC X(10).
-      10 ITEM-PRICE   PIC S9(5)V99.
-```
-
 ```java
 Record table = Record.define("PRICE-TABLE")
-    .group("PRICE-ENTRY", g -> g
-        .pic("ITEM-CODE",  "X(10)")
-        .pic("ITEM-PRICE", "S9(5)V99"))
-    .occurs(100)
+    .pic("ITEM-CODE",  "X(10)").occurs(100)
+    .pic("ITEM-PRICE", "S9(5)V99").occurs(100)
     .build();
 
-table.move("ITEM-CODE", 0, "WIDGET-A");       // 0-based index
-table.move("ITEM-PRICE", 0, new BigDecimal("29.99"));
-```
-
-**OCCURS DEPENDING ON** (variable-length arrays):
-
-```java
-Record rec = Record.define("VAR-TABLE")
-    .pic("ITEM-COUNT", "9(3)")
-    .pic("ITEM", "X(10)").occursDependingOn(100, "ITEM-COUNT")
-    .build();
+table.move("ITEM-CODE", 0, "WIDGET-A");
+table.move("ITEM-PRICE", 0, Decimal.of("29.99"));
 ```
 
 ### Level-88 Conditions
 
-```cobol
-05 ACCOUNT-TYPE    PIC X.
-   88 CHECKING      VALUE "C".
-   88 SAVINGS       VALUE "S".
-   88 MONEY-MARKET  VALUE "M".
-   88 VALID-TYPE    VALUE "C" "S" "M".
-   88 PREMIUM       VALUE "G" THRU "Z".
-```
-
 ```java
-Record rec = Record.define("ACCT")
-    .pic("ACCOUNT-TYPE", "X")
-        .value88("CHECKING",     "C")
-        .value88("SAVINGS",      "S")
-        .value88("MONEY-MARKET", "M")
-        .value88("VALID-TYPE",   "C", "S", "M")  // multiple values
-        .value88Range("PREMIUM", "G", "Z")         // VALUE ... THRU ...
-    .build();
-
 rec.move("ACCOUNT-TYPE", "S");
-assertTrue(rec.is("SAVINGS"));
-assertTrue(rec.is("VALID-TYPE"));
-
-rec.set("CHECKING");  // sets ACCOUNT-TYPE to "C"
+rec.is("SAVINGS");       // true
+rec.is("VALID-TYPE");    // true (88-level with multiple values)
+rec.set("CHECKING");     // sets ACCOUNT-TYPE to "C"
 
 // Custom conditions with lambdas — extend beyond COBOL:
-.condition("HIGH-BALANCE", val -> new BigDecimal(val.trim()).compareTo(threshold) > 0)
+.condition("HIGH-BALANCE", val -> Decimal.of(val.trim()).greaterThan(threshold))
 ```
 
 ### Field References — By-Reference Handles
-
-COBOL data items are inherently by-reference: when you pass a field to a CALL,
-the called program operates on the same memory. `Field` provides this in Java.
 
 ```java
 Field salary = emp.field("EMP-SALARY");
 Field bonus  = ws.field("WS-BONUS");
 Field total  = ws.field("WS-TOTAL");
 
-// Fields are live references into the record's byte buffer.
-// Mutating through a Field mutates the record.
-salary.move(new BigDecimal("75000.00"));
-salary.add(new BigDecimal("5000.00"));
+salary.move(Decimal.of("75000.00"));
+salary.add(Decimal.of("5000.00"));
 
-// Pass to GIVING — by-reference, the Arithmetic writes directly into the field
+// Pass to GIVING — writes directly into the field
 Arithmetic.add(salary.get(), bonus.get())
     .giving(total)
     .rounded()
     .execute();
+```
 
-// Pass to methods — real by-reference semantics
-processField(salary);  // method receives and mutates the same data
+### Decimal — Exact Numeric Values
+
+```java
+Decimal price = Decimal.of("19.99");     // from String — exact
+Decimal count = Decimal.of(100);          // from long — exact
+Decimal total = price.multiply(count);    // immutable, returns new value
+
+// Cached — same string returns same instance
+assertSame(Decimal.of("19.99"), Decimal.of("19.99"));
+
+// Rich comparison
+total.greaterThan(Decimal.of("1000"));
+total.equalTo(Decimal.of("1999.00"));
+total.isZero();
+total.isNegative();
+```
+
+### Variable — Typed Named Handles
+
+```java
+Variable<Decimal> balance = Variable.named("CUST-BALANCE").decimal("S9(7)V99");
+Variable<String>  name    = Variable.named("CUST-NAME").text(20);
+
+balance.set(Decimal.of("50000.00"));
+balance.add(Decimal.of("100.00"));
+String trimmedName = name.trimmed();
+
+// Bind to a Record for persistence
+balance.bindTo(customerRecord, "CUST-BALANCE");
 ```
 
 ### Arithmetic — ADD, SUBTRACT, MULTIPLY, DIVIDE, COMPUTE
 
-Basic arithmetic modifies the target field in place, respecting its PIC constraints:
-
-```cobol
-ADD 100.00 TO BALANCE.
-SUBTRACT FEE FROM BALANCE.
-MULTIPLY RATE BY BALANCE.
-DIVIDE BALANCE BY 12 GIVING MONTHLY-AMT REMAINDER REM-AMT.
-COMPUTE INTEREST = PRINCIPAL * RATE / 12.
-ADD AMT-A AMT-B GIVING TOTAL ROUNDED ON SIZE ERROR PERFORM ERR-RTN.
-```
-
 ```java
-// In-place (modifies the target field):
-rec.add("BALANCE", new BigDecimal("100.00"));
+// In-place:
+rec.add("BALANCE", Decimal.of("100.00"));
 rec.subtract("BALANCE", rec.getDecimal("FEE"));
 rec.multiply("BALANCE", rec.getDecimal("RATE"));
 
-// COMPUTE — use Java's BigDecimal for the expression, store with PIC constraints:
-BigDecimal interest = principal.multiply(rate)
-    .divide(BigDecimal.valueOf(12), 10, RoundingMode.HALF_EVEN);
+// COMPUTE:
+Decimal interest = principal.multiply(rate).divide(Decimal.of(12), 2);
 rec.compute("INTEREST", interest);
 
-// GIVING — result stored in a different field:
-Arithmetic.divide(rec.getDecimal("BALANCE"), BigDecimal.valueOf(12))
+// GIVING with REMAINDER:
+Arithmetic.divide(rec.getDecimal("BALANCE"), Decimal.of(12))
     .giving(rec.field("MONTHLY-AMT"))
     .remainder(rec.field("REM-AMT"))
     .execute();
@@ -310,49 +358,7 @@ Arithmetic.add(amtA.get(), amtB.get())
     .execute();
 ```
 
-### INITIALIZE
-
-```cobol
-INITIALIZE EMPLOYEE-RECORD.
-```
-
-```java
-emp.initialize();           // spaces for alpha, zeros for numeric, recurse groups
-emp.initialize("EMP-NAME"); // initialize just a group
-```
-
 ### Program Structure — Paragraphs, PERFORM, EVALUATE
-
-COBOL programs are structured as named paragraphs executed in sequence.
-`Program` and `ProgramContext` model this as an actor/container:
-
-```cobol
-PROCEDURE DIVISION.
-   MAIN-LOGIC.
-       PERFORM INIT-ROUTINE.
-       PERFORM PROCESS-LOOP UNTIL END-OF-FILE.
-       PERFORM CLEANUP.
-       STOP RUN.
-
-   INIT-ROUTINE.
-       OPEN INPUT CUST-FILE.
-       MOVE "N" TO WS-EOF.
-
-   PROCESS-LOOP.
-       READ CUST-FILE INTO WS-REC
-           AT END SET END-OF-FILE TO TRUE.
-       IF NOT END-OF-FILE
-           PERFORM PROCESS-CUSTOMER.
-
-   PROCESS-CUSTOMER.
-       ADD CUST-BALANCE TO WS-TOTAL.
-       ADD 1 TO WS-COUNT.
-
-   CLEANUP.
-       CLOSE CUST-FILE.
-       DISPLAY "Processed " WS-COUNT " customers".
-       DISPLAY "Total: " WS-TOTAL.
-```
 
 ```java
 Program.define("CUSTOMER-REPORT")
@@ -363,24 +369,9 @@ Program.define("CUSTOMER-REPORT")
            .perform("CLEANUP")
            .stopRun();
     })
-    .paragraph("INIT-ROUTINE", ctx -> {
-        ctx.open(custFile, CobolFile.OpenMode.INPUT);
-        wsRec.move("WS-EOF", "N");
-    })
-    .paragraph("PROCESS-LOOP", ctx -> {
-        ctx.read(custFile).into(wsRec)
-           .atEnd(() -> wsRec.set("END-OF-FILE"))
-           .notAtEnd(() -> ctx.perform("PROCESS-CUSTOMER"))
-           .execute();
-    })
     .paragraph("PROCESS-CUSTOMER", ctx -> {
         wsRec.add("WS-TOTAL", wsRec.getDecimal("CUST-BALANCE"))
-             .add("WS-COUNT", BigDecimal.ONE);
-    })
-    .paragraph("CLEANUP", ctx -> {
-        ctx.close(custFile)
-           .display("Processed ", wsRec.getInt("WS-COUNT"), " customers")
-           .display("Total: ", wsRec.getDecimal("WS-TOTAL"));
+             .add("WS-COUNT", Decimal.ONE);
     })
     .build()
     .run();
@@ -394,19 +385,11 @@ Program.define("CUSTOMER-REPORT")
 | `PERFORM PARA THRU PARA-EXIT` | `ctx.perform("PARA", "PARA-EXIT")` |
 | `PERFORM PARA 10 TIMES` | `ctx.performTimes("PARA", 10)` |
 | `PERFORM PARA UNTIL cond` | `ctx.performUntil("PARA", () -> cond)` |
-| `PERFORM PARA WITH TEST AFTER UNTIL cond` | `ctx.performUntilAfter("PARA", () -> cond)` |
-| `PERFORM PARA VARYING I FROM 1 BY 1 UNTIL I > 10` | `ctx.performVarying("PARA", rec, "I", 1, 1, () -> rec.getInt("I") > 10)` |
-| `PERFORM PARA VARYING I ... AFTER J ...` | `ctx.performVaryingAfter("PARA", rec,"I",1,1,untilI, rec,"J",1,1,untilJ)` |
+| `PERFORM PARA WITH TEST AFTER` | `ctx.performUntilAfter("PARA", () -> cond)` |
+| `PERFORM VARYING I FROM 1 BY 1 UNTIL I > 10` | `ctx.performVarying(...)` |
+| `PERFORM VARYING I ... AFTER J ...` | `ctx.performVaryingAfter(...)` |
 
 ### EVALUATE (Switch/Case)
-
-```cobol
-EVALUATE TRUE
-   WHEN SCORE >= 90  PERFORM A-GRADE
-   WHEN SCORE >= 80  PERFORM B-GRADE
-   WHEN OTHER        PERFORM DEFAULT-GRADE
-END-EVALUATE.
-```
 
 ```java
 ctx.evaluateTrue()
@@ -416,28 +399,9 @@ ctx.evaluateTrue()
    .execute();
 ```
 
-### GO TO and EXIT PARAGRAPH
-
-```java
-ctx.goTo("ERROR-HANDLER");     // transfer control to another paragraph
-ctx.exitParagraph();           // return from current paragraph immediately
-```
-
 ### File I/O
 
-COBOL has first-class file handling with sequential, indexed, and relative
-organizations.
-
-```cobol
-SELECT CUST-FILE ASSIGN TO "CUSTFILE"
-   ORGANIZATION IS INDEXED
-   ACCESS IS DYNAMIC
-   RECORD KEY IS CUST-ID
-   FILE STATUS IS WS-STATUS.
-```
-
 ```java
-FileStatus status = new FileStatus();
 CobolFile custFile = CobolFile.indexed("CUST-FILE")
     .assignTo("/data/customers.dat")
     .recordSize(200)
@@ -449,135 +413,54 @@ ctx.open(custFile, CobolFile.OpenMode.INPUT);
 ctx.read(custFile).into(rec)
    .atEnd(() -> rec.set("END-OF-FILE"))
    .execute();
-ctx.write(custFile, rec);
 ctx.close(custFile);
 ```
 
 ### String Operations — INSPECT, STRING, UNSTRING
 
-```cobol
-INSPECT MESSAGE TALLYING SPACE-COUNT FOR ALL SPACES.
-INSPECT AMOUNT-DISPLAY REPLACING LEADING ZEROS BY SPACES.
-INSPECT DATA-FIELD CONVERTING "abcdefghijklmnopqrstuvwxyz"
-                           TO "ABCDEFGHIJKLMNOPQRSTUVWXYZ".
-```
-
 ```java
-int spaces = Inspect.on(rec, "MESSAGE").tallyAll(" ").count();
-
-Inspect.on(rec, "AMOUNT-DISPLAY").replaceLeading('0', ' ').apply();
-
 Inspect.on(rec, "DATA-FIELD")
-    .converting("abcdefghijklmnopqrstuvwxyz",
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    .converting("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
     .apply();
 
-// With BEFORE/AFTER scoping:
-Inspect.on(rec, "DATA").tallyAll("A").before(".").count();
-```
-
-**STRING** (concatenation with delimiters):
-
-```cobol
-STRING FIRST-NAME DELIMITED BY SPACES
-       " " DELIMITED BY SIZE
-       LAST-NAME DELIMITED BY SPACES
-  INTO FULL-NAME
-  ON OVERFLOW PERFORM OVERFLOW-ROUTINE.
-```
-
-```java
 CobolString.into(rec, "FULL-NAME")
     .from(rec, "FIRST-NAME").delimitedBySpaces()
     .literal(" ")
     .from(rec, "LAST-NAME").delimitedBySpaces()
-    .onOverflow(() -> ctx.perform("OVERFLOW-ROUTINE"))
     .execute();
-```
 
-**UNSTRING** (splitting):
-
-```cobol
-UNSTRING INPUT-LINE DELIMITED BY "," OR SPACES
-   INTO FIELD-1 FIELD-2 FIELD-3.
-```
-
-```java
 CobolUnstring.from(rec, "INPUT-LINE")
-    .delimitedBy(",")
-    .orDelimitedBy(" ")
-    .into(rec, "FIELD-1")
-    .into(rec, "FIELD-2")
-    .into(rec, "FIELD-3")
+    .delimitedBy(",").orDelimitedBy(" ")
+    .into(rec, "FIELD-1").into(rec, "FIELD-2")
     .execute();
 ```
 
 ### SEARCH and SEARCH ALL
 
-```cobol
-SEARCH TABLE-ENTRY
-   AT END PERFORM NOT-FOUND-ROUTINE
-   WHEN TABLE-KEY(IDX) = SEARCH-VALUE
-        PERFORM FOUND-ROUTINE
-END-SEARCH.
-```
-
 ```java
 Search.table(rec, "TABLE-ENTRY")
-    .atEnd(() -> ctx.perform("NOT-FOUND-ROUTINE"))
-    .when(idx -> rec.getString("TABLE-KEY", idx).trim().equals(searchValue),
-          idx -> ctx.perform("FOUND-ROUTINE"))
-    .execute();
-
-// Binary search (SEARCH ALL) — requires sorted table:
-Search.all(rec, "TABLE-ENTRY")
-    .key(idx -> rec.getString("TABLE-KEY", idx).trim())
-    .equalTo(searchValue)
     .atEnd(() -> ctx.perform("NOT-FOUND"))
-    .found(idx -> { /* process found entry at idx */ })
+    .when(idx -> rec.getString("TABLE-KEY", idx).trim().equals(searchValue),
+          idx -> ctx.perform("FOUND"))
     .execute();
 ```
 
 ### SORT with INPUT/OUTPUT PROCEDURE
-
-```cobol
-SORT SORT-FILE
-   ON ASCENDING KEY SORT-NAME
-   ON DESCENDING KEY SORT-AMOUNT
-   INPUT PROCEDURE IS FEED-RECORDS
-   OUTPUT PROCEDURE IS PROCESS-SORTED.
-```
 
 ```java
 CobolSort.on(sortRecord)
     .ascending("SORT-NAME")
     .descending("SORT-AMOUNT")
     .inputProcedure(input -> {
-        // Read source data and RELEASE each record to the sort
-        while (sourceFile.read(inputRec)) {
-            sortRecord.moveCorresponding(inputRec);
-            input.release();
-        }
+        // RELEASE each record to the sort
     })
     .outputProcedure(output -> {
-        // RETURN sorted records one at a time
-        while (output.returnRecord()) {
-            outputRec.moveCorresponding(sortRecord);
-            outputFile.write(outputRec.buffer());
-        }
+        while (output.returnRecord()) { /* process sorted records */ }
     })
     .execute();
 ```
 
 ### Intrinsic Functions
-
-```cobol
-MOVE FUNCTION CURRENT-DATE TO WS-DATE.
-COMPUTE LEN = FUNCTION LENGTH(WS-NAME).
-MOVE FUNCTION UPPER-CASE(WS-INPUT) TO WS-OUTPUT.
-COMPUTE RESULT = FUNCTION MOD(DIVIDEND, DIVISOR).
-COMPUTE AVG = FUNCTION MEAN(V1, V2, V3).
-```
 
 ```java
 rec.move("WS-DATE", Intrinsic.currentDate());
@@ -587,83 +470,45 @@ rec.compute("RESULT", Intrinsic.mod(dividend, divisor));
 rec.compute("AVG", Intrinsic.mean(v1, v2, v3));
 ```
 
-Available functions: `currentDate`, `length`, `upperCase`, `lowerCase`, `reverse`,
-`trim`, `trimLeading`, `trimTrailing`, `numval`, `numvalC`, `mod`, `rem`, `integer`,
-`integerPart`, `abs`, `max`, `min`, `mean`, `median`, `sqrt`, `log`, `log10`, `ord`,
-`charFunction`.
-
-### Embedded SQL (EXEC SQL)
-
-COBOL embedded SQL uses host variables (`:FIELD-NAME`) to bind record fields
-to SQL parameters and result columns.
-
-```cobol
-EXEC SQL
-    SELECT CUST_NAME, CUST_BALANCE
-    INTO :WS-NAME, :WS-BALANCE
-    FROM CUSTOMERS
-    WHERE CUST_ID = :WS-CUST-ID
-END-EXEC.
-IF SQLCODE = 100
-    DISPLAY "Not found"
-END-IF.
-```
+### Embedded SQL
 
 ```java
-sql.select("SELECT CUST_NAME, CUST_BALANCE FROM CUSTOMERS WHERE CUST_ID = ?")
-   .param(rec, "WS-CUST-ID")           // host variable → PreparedStatement param
-   .into(rec, "WS-NAME", "WS-BALANCE") // INTO → ResultSet columns to record fields
-   .execute();
+// All SQL goes through ConnectionFactory → SqlSession
+ConnectionFactory factory = ConnectionFactory.jdbc(
+    "jdbc:postgresql://db:5432/orders", "user", "pass").cached(true);
 
-if (sql.isNotFound()) {
-    ctx.display("Not found");
-}
-```
-
-**Cursors** (multi-row results):
-
-```java
-SqlCursor cursor = sql.declareCursor("CUST-CURSOR",
-    "SELECT NAME, BALANCE FROM CUSTOMERS ORDER BY NAME");
-
-sql.open(cursor);
-sql.fetch(cursor).into(rec, "WS-NAME", "WS-BAL").execute();
-while (sql.isSuccess()) {
-    // process row
-    sql.fetch(cursor).into(rec, "WS-NAME", "WS-BAL").execute();
-}
-sql.close(cursor);
-```
-
-**Connection lifecycle** (acquire/work/commit/release):
-
-```java
-// Unit-of-work pattern — commit on success, rollback on failure, always release:
 SqlSession.work(factory, session -> {
-    session.sql().select("SELECT ...").param(...).into(...).execute();
-    session.sql().execute("UPDATE ...").param(...).execute();
-    // auto-commit at end of block
-});
+    session.sql()
+        .select("SELECT CUST_NAME, BALANCE FROM CUSTOMERS WHERE ID = ?")
+        .param(rec, "WS-CUST-ID")
+        .into(rec, "WS-NAME", "WS-BALANCE")
+        .execute();
 
-// Or explicit try-with-resources:
-try (SqlSession session = SqlSession.from(factory)) {
-    session.sql().select(...).param(...).into(...).execute();
-    session.commit();
-}
-// no commit → auto-rollback; connection always released
+    if (session.isNotFound()) {
+        ctx.display("Not found");
+    }
+});
+// commit on success, rollback on failure, connection always released
 ```
 
-Connection factories support pooling:
+### Database Connectivity
 
 ```java
-ConnectionFactory factory = ConnectionFactory.simple(url, user, pass);       // no pooling
-ConnectionFactory pooled  = ConnectionFactory.cached(factory, 10);           // simple pool
-ConnectionFactory ds      = ConnectionFactory.dataSource(hikariDataSource);  // production pool
+// Any JDBC database — standard URL, the only thing that changes:
+ConnectionFactory.jdbc("jdbc:postgresql://db:5432/orders", "user", "pass").cached(true)
+ConnectionFactory.jdbc("jdbc:mysql://db:3306/orders", "user", "pass").cached(true)
+ConnectionFactory.jdbc("jdbc:oracle:thin:@//db:1521/ORCL", "user", "pass").cached(true)
+ConnectionFactory.jdbc("jdbc:db2://db:50000/ORDERS", "user", "pass").cached(true)
+
+// In-memory convenience for testing (the name makes the ephemeral choice explicit):
+ConnectionFactory.h2InMemory("testdb")
+ConnectionFactory.sqliteInMemory()
+
+// With a production connection pool (HikariCP, etc.):
+ConnectionFactory.jdbc(hikariDataSource)
 ```
 
 ## Extension Points
-
-The library is designed for extension via interfaces and lambdas:
 
 | Extension Point | Interface/Type | Purpose |
 |---|---|---|
@@ -671,31 +516,38 @@ The library is designed for extension via interfaces and lambdas:
 | `SizeErrorHandler` | interface | ON SIZE ERROR / NOT ON SIZE ERROR as lambdas |
 | `CobolFile` | interface | Custom file backends (JDBC, cloud, message queues) |
 | `ConnectionFactory` | `@FunctionalInterface` | Pluggable connection acquisition/release |
+| `ValueTracker` | interface | Audit trail for all Decimal arithmetic and variable changes |
 | `Inspect.replaceAll(IntUnaryOperator)` | lambda | Custom character-level transformations |
-| `CobolString.onOverflow(Runnable)` | lambda | Overflow handling |
-| `Program.onDisplay(Consumer<String>)` | lambda | Redirect DISPLAY output |
-| `Program.onAccept(Supplier<String>)` | lambda | Redirect ACCEPT input |
+| `Program.onDisplay / onAccept` | lambdas | Redirect console I/O |
 | `Search.when(IntPredicate, IntConsumer)` | lambdas | Custom search conditions and actions |
 
 ## Building
 
 ```bash
 export JAVA_HOME=/path/to/jdk17
-mvn clean test
+mvn clean test        # run all tests
+mvn package           # build the runner JAR
 ```
 
-Requires Java 17+ and Maven. Tests use JUnit 5 and H2 (in-memory database for SQL tests).
+Requires Java 17+ and Maven. Tests use JUnit 5, H2, and SQLite.
 
 ## Status
 
-This is a working prototype demonstrating feasibility. The core COBOL runtime
-semantics are implemented and tested (119 tests). Missing pieces for production
-transpilation include:
+Working prototype with 152 passing tests. The core COBOL runtime semantics are
+implemented and the transpiler handles a practical subset of COBOL source. The
+runner can transpile, compile, and execute COBOL programs directly.
 
-- CALL with LINKAGE SECTION (inter-program communication with by-reference parameters)
-- Report Writer (REPORT SECTION — declarative report generation)
+Remaining work for production transpilation:
+
+- CALL with LINKAGE SECTION (inter-program communication)
+- Report Writer (REPORT SECTION)
 - Screen Section (terminal UI)
 - CICS middleware commands
 - EBCDIC collation for comparisons
-- COPY/REPLACE preprocessor (transpiler concern, not runtime)
+- COPY/REPLACE preprocessor
 - SPECIAL-NAMES (DECIMAL-POINT IS COMMA, etc.)
+
+## License
+
+LGPL 2.1 — the library is free to use in proprietary applications. Improvements to
+the library itself must be shared. See [LICENSE](LICENSE) for details.
