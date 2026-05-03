@@ -37,6 +37,13 @@
             <version>3.45.1.0</version>
             <scope>test</scope>
         </dependency>
+        <!-- Silence SLF4J "no binding" warning from sqlite-jdbc -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <version>1.7.36</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

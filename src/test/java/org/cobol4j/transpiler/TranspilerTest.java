@@ -270,4 +270,159 @@ class TranspilerTest {
         assertTrue(java.contains("performVarying"));
         assertTrue(java.contains("WS-IDX"));
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  CALL STATEMENT TRANSPILATION
+    // ═══════════════════════════════════════════════════════════════
+
+    @Test
+    void transpileCallOpen() {
+        String cobol = """
+            IDENTIFICATION DIVISION.
+            PROGRAM-ID. CALL-TEST.
+            DATA DIVISION.
+            WORKING-STORAGE SECTION.
+            01 WS-DATA.
+               05 WS-PATH   PIC X(50).
+               05 WS-FD     PIC S9(9).
+               05 WS-RESULT PIC X(100).
+            PROCEDURE DIVISION.
+            MAIN-PARA.
+                MOVE "/proc/cpuinfo" TO WS-PATH.
+                CALL "open" USING BY CONTENT WS-PATH
+                    BY VALUE 0
+                    RETURNING WS-FD.
+                CALL "close" USING BY VALUE WS-FD.
+                STOP RUN.
+            """;
+
+        String java = Transpiler.transpile(cobol);
+        assertTrue(java.contains("sys.open("), "Should emit sys.open: " + java);
+        assertTrue(java.contains("sys.close("), "Should emit sys.close: " + java);
+    }
+
+    @Test
+    void transpileCallGetenv() {
+        String cobol = """
+            IDENTIFICATION DIVISION.
+            PROGRAM-ID. ENV-TEST.
+            DATA DIVISION.
+            WORKING-STORAGE SECTION.
+            01 WS-DATA.
+               05 WS-HOME PIC X(100).
+            PROCEDURE DIVISION.
+            MAIN-PARA.
+                CALL "getenv" USING BY CONTENT "HOME"
+                    RETURNING WS-HOME.
+                DISPLAY WS-HOME.
+                STOP RUN.
+            """;
+
+        String java = Transpiler.transpile(cobol);
+        assertTrue(java.contains("sys.getenv("), "Should emit sys.getenv: " + java);
+    }
+
+    @Test
+    void transpileCallSystem() {
+        String cobol = """
+            IDENTIFICATION DIVISION.
+            PROGRAM-ID. SYS-TEST.
+            DATA DIVISION.
+            WORKING-STORAGE SECTION.
+            01 WS-DATA.
+               05 WS-RC PIC S9(9).
+            PROCEDURE DIVISION.
+            MAIN-PARA.
+                CALL "system" USING BY CONTENT "ls -la"
+                    RETURNING WS-RC.
+                STOP RUN.
+            """;
+
+        String java = Transpiler.transpile(cobol);
+        assertTrue(java.contains("sys.system("), "Should emit sys.system: " + java);
+    }
+
+    @Test
+    void transpileDiagnosticsCollectWarnings() {
+        String cobol = """
+            IDENTIFICATION DIVISION.
+            PROGRAM-ID. DIAG-TEST.
+            ENVIRONMENT DIVISION.
+            DATA DIVISION.
+            WORKING-STORAGE SECTION.
+            01 WS-DATA.
+               05 WS-X PIC X(10).
+            PROCEDURE DIVISION.
+            MAIN-PARA.
+                STOP RUN.
+            """;
+
+        TranspileDiagnostics diag = new TranspileDiagnostics();
+        String java = Transpiler.transpile(cobol, diag);
+        assertNotNull(java, "Should succeed (no errors)");
+        // ENVIRONMENT DIVISION skipped = info diagnostic
+        assertFalse(diag.isEmpty(), "Should have at least one diagnostic");
+    }
+
+    @Test
+    void transpileCallUnknownProducesError() {
+        String cobol = """
+            IDENTIFICATION DIVISION.
+            PROGRAM-ID. UNK-TEST.
+            DATA DIVISION.
+            WORKING-STORAGE SECTION.
+            01 WS-DATA.
+               05 WS-X PIC X(10).
+            PROCEDURE DIVISION.
+            MAIN-PARA.
+                CALL "ioctl" USING BY VALUE WS-X.
+                STOP RUN.
+            """;
+
+        // Unknown CALL targets cause transpilation failure
+        TranspileDiagnostics diag = new TranspileDiagnostics();
+        String java = Transpiler.transpile(cobol, diag);
+        assertNull(java, "Should return null when errors exist");
+        assertTrue(diag.hasErrors());
+        assertTrue(diag.errors().stream()
+            .anyMatch(d -> d.cobolConstruct().contains("ioctl")),
+            "Should have error about ioctl: " + diag.errors());
+    }
+
+    @Test
+    void multipleErrorsAllCollectedWithoutCascading() {
+        // Use made-up verbs that don't exist in any COBOL dialect
+        String cobol = """
+            IDENTIFICATION DIVISION.
+            PROGRAM-ID. MULTI-ERR.
+            DATA DIVISION.
+            WORKING-STORAGE SECTION.
+            01 WS-DATA.
+               05 WS-X PIC X(10).
+            PROCEDURE DIVISION.
+            MAIN-PARA.
+                FROBULATE WS-X USING SOME ARGS HERE.
+                TRANSMOGIFY WS-X INTO SOMETHING ELSE.
+                DISPLAY "Between errors".
+                STOP RUN.
+            """;
+
+        TranspileDiagnostics diag = new TranspileDiagnostics();
+        String java = Transpiler.transpile(cobol, diag);
+        assertNull(java, "Should fail with errors");
+
+        // Each unknown verb should produce exactly one error — not cascading
+        // errors from their arguments
+        long errorCount = diag.errors().size();
+        assertTrue(errorCount >= 2, "Should have multiple errors: " + diag.errors());
+
+        // DISPLAY and STOP RUN should NOT produce errors — they're recognized verbs
+        // that were parsed after the error recovery skipped past the bad statements
+        assertFalse(diag.errors().stream()
+            .anyMatch(d -> d.cobolConstruct().equals("DISPLAY")),
+            "DISPLAY should not be an error: " + diag.errors());
+        assertFalse(diag.errors().stream()
+            .anyMatch(d -> d.cobolConstruct().equals("STOP")),
+            "STOP should not be an error: " + diag.errors());
+    }
 }

@@ -18,6 +18,7 @@
  */
 package org.cobol4j.runner;
 
+import org.cobol4j.transpiler.TranspileDiagnostics;
 import org.cobol4j.transpiler.Transpiler;
 
 import javax.tools.*;
@@ -82,9 +83,27 @@ public class CobolRunner {
         System.out.println("cobol4j: Reading " + sourceFile);
         String cobolSource = Files.readString(Path.of(sourceFile));
 
-        // Transpile
+        // Transpile with diagnostics
         System.out.println("cobol4j: Transpiling...");
-        String javaSource = Transpiler.transpile(cobolSource);
+        TranspileDiagnostics diag = new TranspileDiagnostics();
+        String javaSource = Transpiler.transpile(cobolSource, diag);
+
+        // Show all diagnostics
+        if (!diag.isEmpty()) {
+            System.err.println("cobol4j: Transpilation diagnostics:");
+            diag.diagnostics().forEach(d -> System.err.println("  " + d));
+        }
+        if (diag.hasErrors()) {
+            System.err.println("cobol4j: " + diag.errors().size() + " error(s) — cannot proceed.");
+            System.err.println("cobol4j: All constructs must be translatable. "
+                + "No partial output was generated.");
+            System.exit(1);
+            return;
+        }
+        if (diag.hasWarnings()) {
+            System.err.println("cobol4j: " + diag.warnings().size()
+                + " warning(s) — output generated but review needed.");
+        }
 
         // Extract class name from generated source
         String className = extractClassName(javaSource);

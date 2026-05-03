@@ -31,21 +31,33 @@ import java.util.List;
 public final class Parser {
 
     private final List<Token> tokens;
+    private final TranspileDiagnostics diag;
     private int pos;
 
-    private Parser(List<Token> tokens) {
+    private Parser(List<Token> tokens, TranspileDiagnostics diag) {
         this.tokens = tokens;
+        this.diag = diag;
         this.pos = 0;
     }
 
     /** Parse a token stream into a CobolProgram AST. */
     public static CobolProgram parse(List<Token> tokens) {
-        return new Parser(tokens).parseProgram();
+        return parse(tokens, new TranspileDiagnostics());
+    }
+
+    /** Parse with diagnostics collection. */
+    public static CobolProgram parse(List<Token> tokens, TranspileDiagnostics diag) {
+        return new Parser(tokens, diag).parseProgram();
     }
 
     /** Convenience: lex and parse source text. */
     public static CobolProgram parse(String source) {
-        return parse(Lexer.tokenize(source));
+        return parse(Lexer.tokenize(source), new TranspileDiagnostics());
+    }
+
+    /** Convenience: lex and parse with diagnostics. */
+    public static CobolProgram parse(String source, TranspileDiagnostics diag) {
+        return parse(Lexer.tokenize(source), diag);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -62,7 +74,9 @@ public final class Parser {
             programId = parseIdentificationDivision();
         }
         if (matchWord("ENVIRONMENT")) {
-            skipDivision(); // skip for now
+            diag.info("parser", current().line(), "ENVIRONMENT DIVISION",
+                "Environment Division skipped — file assignments must be configured in Java code.");
+            skipDivision();
         }
         if (matchWord("DATA")) {
             dataEntries = parseDataDivision();
@@ -168,7 +182,10 @@ public final class Parser {
                     advance();
                 }
             } else {
-                advance(); // skip unrecognized clause words
+                diag.warning("parser", current().line(), current().value(),
+                    "Unrecognized data clause '" + current().value()
+                    + "' in field " + name + " — clause ignored.");
+                advance();
             }
         }
         consumePeriod();
@@ -298,8 +315,21 @@ public final class Parser {
                 && !isVerb(current().value())) {
                 break; // next paragraph starts
             }
-            Statement stmt = parseStatement();
-            if (stmt != null) stmts.add(stmt);
+            try {
+                Statement stmt = parseStatement();
+                if (stmt != null) stmts.add(stmt);
+            } catch (ParseException e) {
+                // Expected parse failure — already reported via diag.
+                // Recover to next sync point and continue.
+                skipToSyncPoint();
+            } catch (RuntimeException e) {
+                // Unexpected failure (NPE, index bounds, etc.) — capture it
+                // so the user sees what broke and the parser keeps going.
+                diag.error("parser", current().line(), current().value(),
+                    "Internal parser error near '" + current().value()
+                    + "': " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                skipToSyncPoint();
+            }
         }
         return stmts;
     }
@@ -310,6 +340,7 @@ public final class Parser {
         if (t.type() == Token.Type.EOF) return null;
 
         return switch (t.value().toUpperCase()) {
+            // ── Implemented verbs ───────────────────────────────────
             case "MOVE"       -> parseMove();
             case "ADD"        -> parseAdd();
             case "SUBTRACT"   -> parseSubtract();
@@ -331,7 +362,26 @@ public final class Parser {
             case "INITIALIZE" -> parseInitialize();
             case "EXIT"       -> parseExit();
             case "EXEC"       -> parseExecSql();
-            default -> { advance(); yield null; } // skip unrecognized
+            case "CALL"       -> parseCall();
+            case "CONTINUE"   -> { advance(); consumeStatementEnd(); yield null; }
+
+            case "INSPECT"    -> parseInspect();
+            case "STRING"     -> parseString();
+            case "UNSTRING"   -> parseUnstring();
+            case "SEARCH"     -> parseSearch();
+            case "SORT"       -> parseSort();
+            case "REWRITE"    -> parseRewrite();
+            case "DELETE"     -> parseDelete();
+            case "MERGE"      -> parseMerge();
+
+            // ── Truly unknown ───────────────────────────────────────
+            default -> {
+                diag.error("parser", t.line(), t.value(),
+                    "Unrecognized verb '" + t.value() + "' — not a known COBOL "
+                    + "statement. Check spelling or dialect-specific extensions.");
+                skipToSyncPoint();
+                yield null;
+            }
         };
     }
 
@@ -644,6 +694,362 @@ public final class Parser {
         return null; // EXIT alone = no-op
     }
 
+    private Statement parseCall() {
+        advance(); // consume CALL
+        // Target: either a string literal ("open") or a variable (PROGRAM-NAME)
+        String target;
+        if (current().type() == Token.Type.STRING) {
+            target = current().value();
+        } else {
+            target = current().value();
+        }
+        advance();
+
+        // Parse USING clause
+        List<Statement.CallParam> params = new ArrayList<>();
+        if (matchWord("USING")) {
+            Statement.PassMode mode = Statement.PassMode.BY_REFERENCE; // COBOL default
+            while (!atEnd() && !atPeriod() && !peek("RETURNING") && !peek("END-CALL")
+                   && !isVerb(current().value())) {
+                if (matchWord("BY")) {
+                    if (matchWord("REFERENCE")) mode = Statement.PassMode.BY_REFERENCE;
+                    else if (matchWord("CONTENT")) mode = Statement.PassMode.BY_CONTENT;
+                    else if (matchWord("VALUE")) mode = Statement.PassMode.BY_VALUE;
+                    continue;
+                }
+                String paramValue;
+                if (current().type() == Token.Type.STRING) {
+                    paramValue = "\"" + current().value() + "\"";
+                } else if (current().type() == Token.Type.NUMBER) {
+                    paramValue = current().value();
+                } else {
+                    paramValue = current().value();
+                }
+                advance();
+                params.add(new Statement.CallParam(paramValue, mode));
+            }
+        }
+
+        // Parse RETURNING clause
+        String returning = null;
+        if (matchWord("RETURNING")) {
+            returning = current().value();
+            advance();
+        }
+
+        matchWord("END-CALL");
+        consumeStatementEnd();
+        return new Statement.Call(target, params, returning);
+    }
+
+    // ── INSPECT ──────────────────────────────────────────────────
+
+    private Statement parseInspect() {
+        advance(); // consume INSPECT
+        String target = current().value(); advance();
+
+        String before = null, after = null;
+
+        if (matchWord("TALLYING")) {
+            String tallyField = current().value(); advance();
+            expect("FOR");
+            String tallyType = "ALL"; // default
+            if (matchWord("ALL")) tallyType = "ALL";
+            else if (matchWord("LEADING")) tallyType = "LEADING";
+            else if (matchWord("CHARACTERS")) {
+                tallyType = "CHARACTERS";
+                parseScopeModifiers(); // consume BEFORE/AFTER
+                consumeStatementEnd();
+                return new Statement.InspectTallying(target, tallyField, tallyType, null, null, null);
+            }
+            String tallyArg = parseValueLiteral();
+            String[] scope = parseScopeModifiers();
+            consumeStatementEnd();
+            return new Statement.InspectTallying(target, tallyField, tallyType, tallyArg,
+                scope[0], scope[1]);
+        }
+
+        if (matchWord("REPLACING")) {
+            String replaceType = "ALL";
+            if (matchWord("ALL")) replaceType = "ALL";
+            else if (matchWord("LEADING")) replaceType = "LEADING";
+            else if (matchWord("FIRST")) replaceType = "FIRST";
+            String from = parseValueLiteral();
+            expect("BY");
+            String to = parseValueLiteral();
+            String[] scope = parseScopeModifiers();
+            consumeStatementEnd();
+            return new Statement.InspectReplacing(target, replaceType, from, to,
+                scope[0], scope[1]);
+        }
+
+        if (matchWord("CONVERTING")) {
+            String from = parseValueLiteral();
+            expect("TO");
+            String to = parseValueLiteral();
+            String[] scope = parseScopeModifiers();
+            consumeStatementEnd();
+            return new Statement.InspectConverting(target, from, to, scope[0], scope[1]);
+        }
+
+        // Fallback: skip to period
+        diag.warning("parser", current().line(), "INSPECT",
+            "INSPECT variant not recognized — skipped.");
+        skipToSyncPoint();
+        return null;
+    }
+
+    private String[] parseScopeModifiers() {
+        String before = null, after = null;
+        if (matchWord("BEFORE")) {
+            consumeIf("INITIAL");
+            before = parseValueLiteral();
+        }
+        if (matchWord("AFTER")) {
+            consumeIf("INITIAL");
+            after = parseValueLiteral();
+        }
+        return new String[]{before, after};
+    }
+
+    // ── STRING ──────────────────────────────────────────────────
+
+    private Statement parseString() {
+        advance(); // consume STRING
+        List<Statement.StringSource> sources = new ArrayList<>();
+
+        while (!atEnd() && !peek("INTO")) {
+            String value;
+            if (current().type() == Token.Type.STRING) {
+                value = "\"" + current().value() + "\"";
+                advance();
+            } else {
+                value = current().value();
+                advance();
+            }
+            String delimiter = null;
+            if (matchWord("DELIMITED")) {
+                expect("BY");
+                if (matchWord("SIZE")) {
+                    delimiter = "SIZE";
+                } else if (matchWord("SPACES") || matchWord("SPACE")) {
+                    delimiter = "SPACES";
+                } else {
+                    delimiter = parseValueLiteral();
+                }
+            }
+            sources.add(new Statement.StringSource(value, delimiter));
+        }
+
+        expect("INTO");
+        String into = current().value(); advance();
+        String pointer = null;
+        if (matchWord("WITH")) {
+            expect("POINTER");
+            pointer = current().value(); advance();
+        }
+        // Skip ON OVERFLOW / NOT ON OVERFLOW for now
+        while (!atEnd() && !atPeriod() && !peek("END-STRING") && !isVerb(current().value())) {
+            advance();
+        }
+        matchWord("END-STRING");
+        consumeStatementEnd();
+        return new Statement.StringStmt(into, sources, pointer);
+    }
+
+    // ── UNSTRING ────────────────────────────────────────────────
+
+    private Statement parseUnstring() {
+        advance(); // consume UNSTRING
+        String source = current().value(); advance();
+
+        List<String> delimiters = new ArrayList<>();
+        if (matchWord("DELIMITED")) {
+            expect("BY");
+            if (matchWord("ALL")) { /* optional ALL */ }
+            delimiters.add(parseValueLiteral());
+            while (matchWord("OR")) {
+                if (matchWord("ALL")) { /* optional ALL */ }
+                delimiters.add(parseValueLiteral());
+            }
+        }
+
+        List<String> into = new ArrayList<>();
+        expect("INTO");
+        while (!atEnd() && !atPeriod() && !peek("WITH") && !peek("TALLYING")
+               && !peek("END-UNSTRING") && !peek("ON") && !isVerb(current().value())) {
+            into.add(current().value());
+            advance();
+        }
+
+        String pointer = null;
+        if (matchWord("WITH")) {
+            expect("POINTER");
+            pointer = current().value(); advance();
+        }
+        String tally = null;
+        if (matchWord("TALLYING")) {
+            consumeIf("IN");
+            tally = current().value(); advance();
+        }
+        matchWord("END-UNSTRING");
+        consumeStatementEnd();
+        return new Statement.UnstringStmt(source, delimiters, into, pointer, tally);
+    }
+
+    // ── SEARCH ──────────────────────────────────────────────────
+
+    private Statement parseSearch() {
+        advance(); // consume SEARCH
+        boolean searchAll = matchWord("ALL");
+        String table = current().value(); advance();
+
+        List<Statement> atEnd = new ArrayList<>();
+        List<Statement.SearchWhen> whenClauses = new ArrayList<>();
+
+        if (matchWord("AT") && matchWord("END")) {
+            while (!atEnd() && !peek("WHEN") && !peek("END-SEARCH") && !atPeriod()) {
+                Statement s = parseStatement();
+                if (s != null) atEnd.add(s);
+            }
+        }
+
+        while (matchWord("WHEN")) {
+            String left = current().value(); advance();
+            String right = null;
+            if (matchWord("=") || matchWord("EQUAL")) {
+                consumeIf("TO");
+                right = readOperand();
+            }
+            List<Statement> body = new ArrayList<>();
+            while (!atEnd() && !peek("WHEN") && !peek("END-SEARCH") && !atPeriod()) {
+                Statement s = parseStatement();
+                if (s != null) body.add(s);
+            }
+            whenClauses.add(new Statement.SearchWhen(left, right, body));
+        }
+
+        matchWord("END-SEARCH");
+        consumeStatementEnd();
+        return new Statement.SearchStmt(table, whenClauses, atEnd);
+    }
+
+    // ── SORT ────────────────────────────────────────────────────
+
+    private Statement parseSort() {
+        advance(); // consume SORT
+        String sortFile = current().value(); advance();
+
+        List<Statement.SortKey> keys = new ArrayList<>();
+        while (matchWord("ON") || matchWord("ASCENDING") || matchWord("DESCENDING")) {
+            boolean ascending;
+            if (current().is("ASCENDING") || tokens.get(pos - 1).is("ASCENDING")) {
+                ascending = true;
+                if (current().is("ASCENDING")) advance();
+            } else {
+                ascending = false;
+                if (current().is("DESCENDING")) advance();
+            }
+            consumeIf("KEY");
+            while (!atEnd() && !peek("ON") && !peek("ASCENDING") && !peek("DESCENDING")
+                   && !peek("USING") && !peek("GIVING") && !peek("INPUT")
+                   && !peek("OUTPUT") && !atPeriod()) {
+                keys.add(new Statement.SortKey(current().value(), ascending));
+                advance();
+            }
+        }
+
+        String using = null, giving = null;
+        boolean hasInputProc = false, hasOutputProc = false;
+        String inputProc = null, outputProc = null;
+
+        if (matchWord("USING")) { using = current().value(); advance(); }
+        if (matchWord("INPUT")) {
+            expect("PROCEDURE");
+            consumeIf("IS");
+            hasInputProc = true;
+            inputProc = current().value(); advance();
+        }
+        if (matchWord("GIVING")) { giving = current().value(); advance(); }
+        if (matchWord("OUTPUT")) {
+            expect("PROCEDURE");
+            consumeIf("IS");
+            hasOutputProc = true;
+            outputProc = current().value(); advance();
+        }
+
+        consumeStatementEnd();
+        return new Statement.SortStmt(sortFile, keys, using, giving,
+            hasInputProc, inputProc, hasOutputProc, outputProc);
+    }
+
+    // ── MERGE ────────────────────────────────────────────────────
+
+    private Statement parseMerge() {
+        advance(); // consume MERGE — same structure as SORT
+        String mergeFile = current().value(); advance();
+
+        List<Statement.SortKey> keys = new ArrayList<>();
+        while (matchWord("ON") || matchWord("ASCENDING") || matchWord("DESCENDING")) {
+            boolean ascending;
+            if (current().is("ASCENDING") || tokens.get(pos - 1).is("ASCENDING")) {
+                ascending = true;
+                if (current().is("ASCENDING")) advance();
+            } else {
+                ascending = false;
+                if (current().is("DESCENDING")) advance();
+            }
+            consumeIf("KEY");
+            while (!atEnd() && !peek("ON") && !peek("ASCENDING") && !peek("DESCENDING")
+                   && !peek("USING") && !peek("GIVING") && !peek("OUTPUT") && !atPeriod()) {
+                keys.add(new Statement.SortKey(current().value(), ascending));
+                advance();
+            }
+        }
+
+        String using = null, giving = null;
+        boolean hasOutputProc = false;
+        String outputProc = null;
+
+        if (matchWord("USING")) {
+            using = current().value(); advance();
+            // MERGE can have multiple USING files — collect them
+            while (!atEnd() && !peek("GIVING") && !peek("OUTPUT") && !atPeriod()
+                   && !isVerb(current().value())) {
+                advance(); // additional USING files
+            }
+        }
+        if (matchWord("GIVING")) { giving = current().value(); advance(); }
+        if (matchWord("OUTPUT")) {
+            expect("PROCEDURE");
+            consumeIf("IS");
+            hasOutputProc = true;
+            outputProc = current().value(); advance();
+        }
+
+        consumeStatementEnd();
+        return new Statement.SortStmt(mergeFile, keys, using, giving,
+            false, null, hasOutputProc, outputProc);
+    }
+
+    // ── REWRITE / DELETE ────────────────────────────────────────
+
+    private Statement parseRewrite() {
+        advance(); // consume REWRITE
+        String rec = current().value(); advance();
+        String from = null;
+        if (matchWord("FROM")) { from = current().value(); advance(); }
+        consumeStatementEnd();
+        return new Statement.Rewrite(rec, from);
+    }
+
+    private Statement parseDelete() {
+        advance(); // consume DELETE
+        String file = current().value(); advance();
+        consumeStatementEnd();
+        return new Statement.Delete(file);
+    }
+
     private Statement parseExecSql() {
         advance(); // consume EXEC
         expect("SQL");
@@ -768,6 +1174,8 @@ public final class Parser {
 
     private void expect(String word) {
         if (!matchWord(word)) {
+            diag.error("parser", current().line(), current().value(),
+                "Expected '" + word + "' but found '" + current().value() + "'");
             throw new ParseException("Expected '" + word + "' but found " + current(), current().line());
         }
     }
@@ -782,6 +1190,35 @@ public final class Parser {
         // In COBOL, statements end at period or before next verb / scope terminator
         // We opportunistically consume a period if present
         if (atPeriod()) advance();
+    }
+
+    /**
+     * Error recovery: skip forward to the next safe synchronization point.
+     * This is either:
+     * - The next period (sentence terminator)
+     * - The next recognized verb (start of a new statement we can try to parse)
+     * - A paragraph header (WORD followed by PERIOD)
+     *
+     * This prevents cascading errors: if we can't parse INSPECT, we skip its
+     * arguments rather than misreading them as verb names and generating
+     * spurious "unrecognized verb" errors for TALLYING, REPLACING, etc.
+     */
+    private void skipToSyncPoint() {
+        // Always advance at least one token — prevents infinite loops
+        // when the current token is itself a verb we can't parse.
+        if (!atEnd()) advance();
+
+        while (!atEnd()) {
+            if (atPeriod()) {
+                advance();
+                return;
+            }
+            // Stop before the next recognized verb so the main loop can try it
+            if (current().type() == Token.Type.WORD && isVerb(current().value())) {
+                return;
+            }
+            advance();
+        }
     }
 
     private void skipDivision() {

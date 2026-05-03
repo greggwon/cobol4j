@@ -80,6 +80,49 @@ public sealed interface Statement {
 
     record SetCondition(String conditionName) implements Statement {}
 
+    // ── String operations ────────────────────────────────────────
+
+    record InspectTallying(String target, String tallyField,
+                            String tallyType, String tallyArg,
+                            String before, String after) implements Statement {}
+    record InspectReplacing(String target, String replaceType,
+                             String from, String to,
+                             String before, String after) implements Statement {}
+    record InspectConverting(String target, String from, String to,
+                              String before, String after) implements Statement {}
+
+    record StringStmt(String into, List<StringSource> sources,
+                       String pointer) implements Statement {}
+    record StringSource(String value, String delimiter) implements Statement {}
+
+    record UnstringStmt(String source, List<String> delimiters,
+                         List<String> into, String pointer,
+                         String tallyField) implements Statement {}
+
+    // ── Table operations ────────────────────────────────────────
+
+    record SearchStmt(String table, List<SearchWhen> whenClauses,
+                       List<Statement> atEnd) implements Statement {}
+    record SearchWhen(String condition, String conditionRight,
+                       List<Statement> body) implements Statement {}
+
+    record SortStmt(String sortFile, List<SortKey> keys,
+                     String using, String giving,
+                     boolean hasInputProc, String inputProc,
+                     boolean hasOutputProc, String outputProc) implements Statement {}
+    record SortKey(String field, boolean ascending) implements Statement {}
+
+    // ── File operations (additional) ────────────────────────────
+
+    record Rewrite(String recordName, String from) implements Statement {}
+    record Delete(String fileName) implements Statement {}
+
+    // ── CALL — subprogram or system call ──────────────────────────
+
+    record Call(String target, List<CallParam> params, String returning) implements Statement {}
+    record CallParam(String value, PassMode mode) implements Statement {}
+    enum PassMode { BY_REFERENCE, BY_CONTENT, BY_VALUE }
+
     // ── SQL ─────────────────────────────────────────────────────────
 
     record ExecSql(String sqlText) implements Statement {}

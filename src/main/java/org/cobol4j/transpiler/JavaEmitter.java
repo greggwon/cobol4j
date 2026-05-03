@@ -34,15 +34,22 @@ public final class JavaEmitter {
     private final StringBuilder out = new StringBuilder();
     private int indent = 0;
     private final String className;
+    private final TranspileDiagnostics diag;
 
-    private JavaEmitter(CobolProgram program) {
+    private JavaEmitter(CobolProgram program, TranspileDiagnostics diag) {
         this.program = program;
         this.className = toJavaClassName(program.programId());
+        this.diag = diag;
     }
 
     /** Generate Java source from a parsed COBOL program. */
     public static String emit(CobolProgram program) {
-        return new JavaEmitter(program).generate();
+        return emit(program, new TranspileDiagnostics());
+    }
+
+    /** Generate with diagnostics collection. */
+    public static String emit(CobolProgram program, TranspileDiagnostics diag) {
+        return new JavaEmitter(program, diag).generate();
     }
 
     private String generate() {
@@ -68,12 +75,20 @@ public final class JavaEmitter {
         line("import org.cobol4j.SizeErrorHandler;");
         line("import org.cobol4j.Field;");
         line("import org.cobol4j.Decimal;");
+        line("import org.cobol4j.Inspect;");
+        line("import org.cobol4j.CobolString;");
+        line("import org.cobol4j.CobolUnstring;");
+        line("import org.cobol4j.Search;");
+        line("import org.cobol4j.CobolSort;");
+        line("import org.cobol4j.interop.SystemCall;");
         line("");
     }
 
     private void emitClassOpen() {
         line("public class " + className + " {");
         indent++;
+        line("");
+        line("private final SystemCall sys = SystemCall.defaultInstance();");
         line("");
     }
 
@@ -243,7 +258,17 @@ public final class JavaEmitter {
         else if (stmt instanceof Statement.ExitParagraph e) line("ctx.exitParagraph();");
         else if (stmt instanceof Statement.SetCondition sc) line(findRecordFor(sc.conditionName()) + ".set(\"" + sc.conditionName() + "\");");
         else if (stmt instanceof Statement.ExecSql sq) emitExecSql(sq);
-        // WhenClause handled within Evaluate
+        else if (stmt instanceof Statement.Call call) emitCall(call);
+        else if (stmt instanceof Statement.InspectTallying it) emitInspectTallying(it);
+        else if (stmt instanceof Statement.InspectReplacing ir) emitInspectReplacing(ir);
+        else if (stmt instanceof Statement.InspectConverting ic) emitInspectConverting(ic);
+        else if (stmt instanceof Statement.StringStmt ss) emitStringStmt(ss);
+        else if (stmt instanceof Statement.UnstringStmt us) emitUnstringStmt(us);
+        else if (stmt instanceof Statement.SearchStmt sr) emitSearchStmt(sr);
+        else if (stmt instanceof Statement.SortStmt so) emitSortStmt(so);
+        else if (stmt instanceof Statement.Rewrite rw) line("ctx.rewrite(" + toJavaFieldName(rw.recordName()) + ", " + recRef(rw.recordName()) + ");");
+        else if (stmt instanceof Statement.Delete dl) line("ctx.delete(" + toJavaFieldName(dl.fileName()) + ");");
+        // WhenClause, CallParam, StringSource, SearchWhen, SortKey handled within parent
     }
 
     private void emitMove(Statement.Move m) {
@@ -417,8 +442,286 @@ public final class JavaEmitter {
     }
 
     private void emitExecSql(Statement.ExecSql s) {
+        diag.warning("emitter", 0, "EXEC SQL",
+            "Embedded SQL requires manual translation to CobolSql/SqlSession API. "
+            + "SQL text: " + s.sqlText());
         line("// EXEC SQL: " + s.sqlText());
-        line("// TODO: Implement SQL translation");
+        line("// TODO: Translate to CobolSql/SqlSession API");
+    }
+
+    // ── INSPECT ──────────────────────────────────────────────────
+
+    private void emitInspectTallying(Statement.InspectTallying it) {
+        String rec = recRef(it.target());
+        StringBuilder sb = new StringBuilder();
+        sb.append("Inspect.on(").append(rec).append(", \"").append(it.target()).append("\")");
+        switch (it.tallyType()) {
+            case "ALL" -> sb.append(".tallyAll(").append(emitValueExpr(it.tallyArg())).append(")");
+            case "LEADING" -> sb.append(".tallyLeading(").append(emitValueExpr(it.tallyArg())).append(".charAt(0))");
+            case "CHARACTERS" -> sb.append(".tallyCharacters()");
+        }
+        if (it.before() != null) sb.append(".before(").append(emitValueExpr(it.before())).append(")");
+        if (it.after() != null) sb.append(".after(").append(emitValueExpr(it.after())).append(")");
+        line(rec + ".move(\"" + it.tallyField() + "\", (long) " + sb + ".count());");
+    }
+
+    private void emitInspectReplacing(Statement.InspectReplacing ir) {
+        String rec = recRef(ir.target());
+        StringBuilder sb = new StringBuilder();
+        sb.append("Inspect.on(").append(rec).append(", \"").append(ir.target()).append("\")");
+        String from = emitValueExpr(ir.from());
+        String to = emitValueExpr(ir.to());
+        switch (ir.replaceType()) {
+            case "ALL" -> sb.append(".replaceAll(").append(from).append(".charAt(0), ").append(to).append(".charAt(0))");
+            case "LEADING" -> sb.append(".replaceLeading(").append(from).append(".charAt(0), ").append(to).append(".charAt(0))");
+            case "FIRST" -> sb.append(".replaceFirst(").append(from).append(".charAt(0), ").append(to).append(".charAt(0))");
+        }
+        if (ir.before() != null) sb.append(".before(").append(emitValueExpr(ir.before())).append(")");
+        if (ir.after() != null) sb.append(".after(").append(emitValueExpr(ir.after())).append(")");
+        line(sb + ".apply();");
+    }
+
+    private void emitInspectConverting(Statement.InspectConverting ic) {
+        String rec = recRef(ic.target());
+        StringBuilder sb = new StringBuilder();
+        sb.append("Inspect.on(").append(rec).append(", \"").append(ic.target()).append("\")");
+        sb.append(".converting(").append(emitValueExpr(ic.from())).append(", ").append(emitValueExpr(ic.to())).append(")");
+        if (ic.before() != null) sb.append(".before(").append(emitValueExpr(ic.before())).append(")");
+        if (ic.after() != null) sb.append(".after(").append(emitValueExpr(ic.after())).append(")");
+        line(sb + ".apply();");
+    }
+
+    // ── STRING / UNSTRING ───────────────────────────────────────
+
+    private void emitStringStmt(Statement.StringStmt ss) {
+        String rec = recRef(ss.into());
+        line("CobolString.into(" + rec + ", \"" + ss.into() + "\")");
+        indent++;
+        for (Statement.StringSource src : ss.sources()) {
+            String val = src.value();
+            if (val.startsWith("\"")) {
+                line(".literal(" + val + ")");
+            } else {
+                String srcRec = recRef(val);
+                String delim = src.delimiter();
+                if (delim == null || "SIZE".equals(delim)) {
+                    line(".from(" + srcRec + ", \"" + val + "\").delimitedBySize()");
+                } else if ("SPACES".equals(delim)) {
+                    line(".from(" + srcRec + ", \"" + val + "\").delimitedBySpaces()");
+                } else {
+                    line(".from(" + srcRec + ", \"" + val + "\").delimitedBy(" + emitValueExpr(delim) + ")");
+                }
+            }
+        }
+        line(".execute();");
+        indent--;
+    }
+
+    private void emitUnstringStmt(Statement.UnstringStmt us) {
+        String rec = recRef(us.source());
+        line("CobolUnstring.from(" + rec + ", \"" + us.source() + "\")");
+        indent++;
+        for (int i = 0; i < us.delimiters().size(); i++) {
+            String d = us.delimiters().get(i);
+            if (i == 0) line(".delimitedBy(" + emitValueExpr(d) + ")");
+            else line(".orDelimitedBy(" + emitValueExpr(d) + ")");
+        }
+        for (String field : us.into()) {
+            line(".into(" + recRef(field) + ", \"" + field + "\")");
+        }
+        line(".execute();");
+        indent--;
+    }
+
+    // ── SEARCH ──────────────────────────────────────────────────
+
+    private void emitSearchStmt(Statement.SearchStmt sr) {
+        String rec = recRef(sr.table());
+        line("Search.table(" + rec + ", \"" + sr.table() + "\")");
+        indent++;
+        if (!sr.atEnd().isEmpty()) {
+            line(".atEnd(() -> {");
+            indent++;
+            for (Statement s : sr.atEnd()) emitStatement(s);
+            indent--;
+            line("})");
+        }
+        for (Statement.SearchWhen w : sr.whenClauses()) {
+            if (w.conditionRight() != null) {
+                line(".when(idx -> " + rec + ".getString(\"" + w.condition() + "\", idx).trim().equals("
+                    + emitValueExpr(w.conditionRight()) + "), idx -> {");
+            } else {
+                line(".when(idx -> " + rec + ".is(\"" + w.condition() + "\"), idx -> {");
+            }
+            indent++;
+            for (Statement s : w.body()) emitStatement(s);
+            indent--;
+            line("})");
+        }
+        line(".execute();");
+        indent--;
+    }
+
+    // ── SORT ────────────────────────────────────────────────────
+
+    private void emitSortStmt(Statement.SortStmt so) {
+        line("CobolSort.on(" + toJavaFieldName(so.sortFile()) + ")");
+        indent++;
+        for (Statement.SortKey key : so.keys()) {
+            if (key.ascending()) {
+                line(".ascending(\"" + key.field() + "\")");
+            } else {
+                line(".descending(\"" + key.field() + "\")");
+            }
+        }
+        if (so.hasInputProc()) {
+            line(".inputProcedure(input -> {");
+            indent++;
+            line("ctx.perform(\"" + so.inputProc() + "\");");
+            indent--;
+            line("})");
+        }
+        if (so.hasOutputProc()) {
+            line(".outputProcedure(output -> {");
+            indent++;
+            line("ctx.perform(\"" + so.outputProc() + "\");");
+            indent--;
+            line("})");
+        }
+        line(".execute();");
+        indent--;
+    }
+
+    private void emitCall(Statement.Call call) {
+        String target = call.target().toLowerCase().replace("\"", "");
+        String returning = call.returning();
+        List<Statement.CallParam> params = call.params();
+
+        String retAssign = "";
+        if (returning != null) {
+            retAssign = recRef(returning) + ".move(\"" + returning + "\", Decimal.of(";
+        }
+
+        // Map POSIX/system functions to SystemCall methods
+        switch (target) {
+            case "open" -> {
+                String path = emitCallParam(params, 0);
+                String flags = params.size() > 1 ? emitCallParam(params, 1) : "SystemCall.O_RDONLY";
+                String call_ = "sys.open(" + path + ", " + flags + ")";
+                if (returning != null) {
+                    line(recRef(returning) + ".move(\"" + returning + "\", (long) " + call_ + ");");
+                } else {
+                    line(call_ + ";");
+                }
+            }
+            case "close" -> {
+                String fd = emitCallParam(params, 0);
+                line("sys.close((int) " + fd + ");");
+            }
+            case "read" -> {
+                String fd = emitCallParam(params, 0);
+                String buf = emitCallParam(params, 1);
+                String len = emitCallParam(params, 2);
+                String call_ = "sys.read((int) " + fd + ", " + buf + ".rawBuffer(), " + len + ")";
+                if (returning != null) {
+                    line(recRef(returning) + ".move(\"" + returning + "\", (long) " + call_ + ");");
+                } else {
+                    line(call_ + ";");
+                }
+            }
+            case "write" -> {
+                String fd = emitCallParam(params, 0);
+                String buf = emitCallParam(params, 1);
+                String len = emitCallParam(params, 2);
+                String call_ = "sys.write((int) " + fd + ", " + buf + ".rawBuffer(), " + len + ")";
+                if (returning != null) {
+                    line(recRef(returning) + ".move(\"" + returning + "\", (long) " + call_ + ");");
+                } else {
+                    line(call_ + ";");
+                }
+            }
+            case "getenv" -> {
+                String name = emitCallParam(params, 0);
+                if (returning != null) {
+                    line(recRef(returning) + ".move(\"" + returning + "\", sys.getenv(" + name + "));");
+                } else {
+                    line("sys.getenv(" + name + ");");
+                }
+            }
+            case "system" -> {
+                String cmd = emitCallParam(params, 0);
+                String call_ = "sys.system(" + cmd + ")";
+                if (returning != null) {
+                    line(recRef(returning) + ".move(\"" + returning + "\", (long) " + call_ + ");");
+                } else {
+                    line(call_ + ";");
+                }
+            }
+            case "socket" -> {
+                String domain = emitCallParam(params, 0);
+                String type = emitCallParam(params, 1);
+                String call_ = "sys.socket((int) " + domain + ", (int) " + type + ")";
+                if (returning != null) {
+                    line(recRef(returning) + ".move(\"" + returning + "\", (long) " + call_ + ");");
+                } else {
+                    line(call_ + ";");
+                }
+            }
+            case "connect" -> {
+                String fd = emitCallParam(params, 0);
+                String host = emitCallParam(params, 1);
+                String port = emitCallParam(params, 2);
+                line("sys.connect((int) " + fd + ", " + host + ", (int) " + port + ");");
+            }
+            case "send" -> {
+                String fd = emitCallParam(params, 0);
+                String buf = emitCallParam(params, 1);
+                String len = emitCallParam(params, 2);
+                String call_ = "sys.send((int) " + fd + ", " + buf + ".rawBuffer(), " + len + ")";
+                if (returning != null) {
+                    line(recRef(returning) + ".move(\"" + returning + "\", (long) " + call_ + ");");
+                } else {
+                    line(call_ + ";");
+                }
+            }
+            case "recv" -> {
+                String fd = emitCallParam(params, 0);
+                String buf = emitCallParam(params, 1);
+                String len = emitCallParam(params, 2);
+                String call_ = "sys.recv((int) " + fd + ", " + buf + ".rawBuffer(), " + len + ")";
+                if (returning != null) {
+                    line(recRef(returning) + ".move(\"" + returning + "\", (long) " + call_ + ");");
+                } else {
+                    line(call_ + ";");
+                }
+            }
+            default -> {
+                // Unknown CALL target — record as error, emit comment preserving original
+                diag.error("emitter", 0, "CALL \"" + target + "\"",
+                    "No SystemCall mapping for '" + target + "'. "
+                    + "This CALL cannot be translated automatically. "
+                    + "Provide a custom SystemCall implementation or translate manually.");
+                line("// ERROR: CALL \"" + target + "\" not supported in this implementation");
+                StringBuilder args = new StringBuilder();
+                for (int i = 0; i < params.size(); i++) {
+                    if (i > 0) args.append(", ");
+                    args.append(emitCallParam(params, i));
+                }
+                line("// Original: CALL \"" + target + "\" USING " + args
+                    + (returning != null ? " RETURNING " + returning : "") + "");
+                line("throw new UnsupportedOperationException(\"CALL \\\"" + target
+                    + "\\\" not supported\");");
+            }
+        }
+    }
+
+    private String emitCallParam(List<Statement.CallParam> params, int index) {
+        if (index >= params.size()) return "0";
+        String val = params.get(index).value();
+        if (val.startsWith("\"")) return val; // string literal
+        if (val.matches("-?\\d+\\.?\\d*")) return val; // numeric literal
+        // Field reference — get the value
+        return recRef(val) + ".getString(\"" + val + "\").trim()";
     }
 
     // ── Expression helpers ──────────────────────────────────────────
@@ -457,9 +760,10 @@ public final class JavaEmitter {
     }
 
     private String convertArithmeticExpr(String expr) {
-        // Simple: wrap the whole expression as a BigDecimal computation comment
-        // A real implementation would parse the expression tree
-        return "Decimal.of(\"0\") /* TODO: " + expr + " */";
+        diag.warning("emitter", 0, "COMPUTE expression",
+            "Arithmetic expression '" + expr
+            + "' requires manual translation to Decimal operations.");
+        return "Decimal.of(\"0\") /* TODO: translate expression: " + expr + " */";
     }
 
     private String emitSizeErrorHandler(List<Statement> onErr, List<Statement> notErr) {
