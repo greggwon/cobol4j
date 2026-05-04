@@ -194,7 +194,7 @@ public interface ConnectionFactory {
 
     // ── Deprecated aliases — use jdbc() or the InMemory variants ────
 
-    /** @deprecated Use {@link #h2InMemory(String)} or {@code jdbc("jdbc:h2:...")} */
+    /** @Deprecated Use {@link #h2InMemory(String)} or {@code jdbc("jdbc:h2:...")} */
     static ConnectionFactory h2(String nameOrPath) {
         if (nameOrPath.startsWith("mem:")) {
             return h2InMemory(nameOrPath.substring(4));
@@ -202,7 +202,7 @@ public interface ConnectionFactory {
         return jdbc("jdbc:h2:" + nameOrPath + ";DB_CLOSE_DELAY=-1", "", "");
     }
 
-    /** @deprecated Use {@link #sqliteInMemory()} or {@code jdbc("jdbc:sqlite:...")} */
+    /** @Deprecated Use {@link #sqliteInMemory()} or {@code jdbc("jdbc:sqlite:...")} */
     static ConnectionFactory sqlite(String pathOrMemory) {
         if (pathOrMemory.contains(":memory:")) {
             return sqliteInMemory();
@@ -223,7 +223,7 @@ public interface ConnectionFactory {
     }
 
     // Keep simple() as internal for backward compat with tests
-    /** @deprecated Use {@link #jdbc(String, String, String)} instead. */
+    /** @Deprecated Use {@link #jdbc(String, String, String)} instead. */
     static ConnectionFactory simple(String url, String user, String password) {
         return jdbc(url, user, password);
     }

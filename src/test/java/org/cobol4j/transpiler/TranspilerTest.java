@@ -380,17 +380,24 @@ class TranspilerTest {
             """;
 
         // Unknown CALL targets cause transpilation failure
-        TranspileDiagnostics diag = new TranspileDiagnostics();
-        String java = Transpiler.transpile(cobol, diag);
-        assertNull(java, "Should return null when errors exist");
-        assertTrue(diag.hasErrors());
-        assertTrue(diag.errors().stream()
-            .anyMatch(d -> d.cobolConstruct().contains("ioctl")),
-            "Should have error about ioctl: " + diag.errors());
+        System.out.println("--- Expected errors below (testing unsupported CALL detection) ---");
+        try {
+            TranspileDiagnostics diag = new TranspileDiagnostics();
+            String java = Transpiler.transpile(cobol, diag);
+            assertNull(java, "Should return null when errors exist");
+            assertTrue(diag.hasErrors());
+            assertTrue(diag.errors().stream()
+                .anyMatch(d -> d.cobolConstruct().contains("ioctl")),
+                "Should have error about ioctl: " + diag.errors());
+        } finally {
+            System.out.println("--- End expected errors ---");
+        }
     }
 
     @Test
     void multipleErrorsAllCollectedWithoutCascading() {
+        System.out.println("--- Expected errors below (testing error recovery with unknown verbs) ---");
+        try {
         // Use made-up verbs that don't exist in any COBOL dialect
         String cobol = """
             IDENTIFICATION DIVISION.
@@ -424,5 +431,8 @@ class TranspilerTest {
         assertFalse(diag.errors().stream()
             .anyMatch(d -> d.cobolConstruct().equals("STOP")),
             "STOP should not be an error: " + diag.errors());
+        } finally {
+            System.out.println("--- End expected errors ---");
+        }
     }
 }

@@ -68,10 +68,15 @@ class PreprocessorTest {
 
     @Test
     void copyNotFoundReportsError(@TempDir Path tempDir) {
-        String source = "COPY NONEXISTENT.";
-        TranspileDiagnostics diag = new TranspileDiagnostics();
-        Preprocessor.process(source, List.of(tempDir), diag);
-        assertTrue(diag.hasErrors());
+        System.out.println("--- Expected error below (testing missing copybook handling) ---");
+        try {
+            String source = "COPY NONEXISTENT.";
+            TranspileDiagnostics diag = new TranspileDiagnostics();
+            Preprocessor.process(source, List.of(tempDir), diag);
+            assertTrue(diag.hasErrors());
+        } finally {
+            System.out.println("--- End expected error ---");
+        }
     }
 
     @Test
@@ -94,12 +99,17 @@ class PreprocessorTest {
 
     @Test
     void infiniteRecursionDetected(@TempDir Path tempDir) throws Exception {
-        Files.writeString(tempDir.resolve("LOOP.cpy"), "COPY LOOP.");
+        System.out.println("--- Expected error below (testing infinite recursion detection) ---");
+        try {
+            Files.writeString(tempDir.resolve("LOOP.cpy"), "COPY LOOP.");
 
-        String source = "COPY LOOP.";
-        TranspileDiagnostics diag = new TranspileDiagnostics();
-        Preprocessor.process(source, List.of(tempDir), diag);
-        assertTrue(diag.hasErrors());
+            String source = "COPY LOOP.";
+            TranspileDiagnostics diag = new TranspileDiagnostics();
+            Preprocessor.process(source, List.of(tempDir), diag);
+            assertTrue(diag.hasErrors());
+        } finally {
+            System.out.println("--- End expected error ---");
+        }
     }
 
     @Test
