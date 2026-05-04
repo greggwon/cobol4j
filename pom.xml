@@ -74,7 +74,21 @@
                     </archive>
                 </configuration>
             </plugin>
-            <!-- Shade plugin: builds a fat JAR with all dependencies included -->
+            <!-- Source JAR for IDE debugging and Maven Central -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <version>3.3.0</version>
+                <executions>
+                    <execution>
+                        <id>attach-sources</id>
+                        <goals>
+                            <goal>jar-no-fork</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Shade plugin: builds a fat JAR (runner) as a separate artifact -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -86,6 +100,8 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
+                            <shadedArtifactAttached>true</shadedArtifactAttached>
+                            <shadedClassifierName>runner</shadedClassifierName>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>org.cobol4j.runner.CobolRunner</mainClass>
@@ -101,7 +117,6 @@
                                     </excludes>
                                 </filter>
                             </filters>
-                            <!-- Exclude test-scope dependencies from the fat JAR -->
                             <minimizeJar>false</minimizeJar>
                         </configuration>
                     </execution>
