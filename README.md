@@ -641,6 +641,69 @@ commarea.loadFrom(Ebcdic.toAscii(response));
 String name = commarea.getString("CUST-NAME").trim();
 ```
 
+## CICS Container
+
+cobol4j includes a lightweight CICS-like transaction processing container. Programs
+are installed, routed by transaction ID, and share managed resources — the same
+programming model as IBM CICS, running in-process in the JVM.
+
+See [CICSIntg.md](CICSIntg.md) for full documentation.
+
+```java
+CicsRegion region = CicsRegion.create("PROD")
+    .install("CUSTINQ", ctx -> {
+        ctx.receive(commarea);
+        ctx.readFile("CUSTFILE", custRec, commarea.getString("CUST-ID").trim());
+        commarea.move("CUST-NAME", custRec.getString("NAME"));
+        ctx.send(commarea);
+        ctx.returnTransaction();
+    })
+    .transaction("CINQ", "CUSTINQ")
+    .start();
+
+region.dispatch("CINQ", commarea);
+```
+
+Programs can be hot-deployed from JARs at runtime — drop a JAR in a watched
+directory and it's automatically loaded, installed, and routed via ServiceLoader.
+
+## Codec System (JSON / XML / Pluggable)
+
+Records can be serialized to/from JSON and XML (mapping to COBOL's JSON GENERATE /
+XML GENERATE verbs). Custom codecs are discoverable via Java's ServiceLoader.
+
+```java
+String json = CodecRegistry.instance().toJson(customerRecord);
+CodecRegistry.instance().fromJson(jsonInput, customerRecord);
+
+String xml = CodecRegistry.instance().toXml(customerRecord);
+CodecRegistry.instance().fromXml(xmlInput, customerRecord);
+```
+
+No external dependencies — XML uses JDK's javax.xml, JSON is hand-written.
+Add custom codecs by implementing `RecordCodec` or `FieldCodec` and registering
+via `META-INF/services`.
+
+## CALL with LINKAGE SECTION
+
+Inter-program communication with by-reference parameter passing:
+
+```java
+Program calcTax = Program.define("CALC-TAX")
+    .linkage("LS-AMOUNT", "S9(7)V99")
+    .linkage("LS-RATE", "S9V9999")
+    .linkage("LS-RESULT", "S9(7)V99")
+    .paragraph("CALC", ctx -> {
+        Decimal amount = ctx.linkageField("LS-AMOUNT").get();
+        Decimal rate = ctx.linkageField("LS-RATE").get();
+        ctx.linkageField("LS-RESULT").move(amount.multiply(rate));
+    })
+    .build();
+
+// Caller passes Field references — called program writes directly to caller's data
+ctx.call(calcTax, rec.field("WS-AMOUNT"), rec.field("WS-RATE"), rec.field("WS-RESULT"));
+```
+
 ## Extension Points
 
 | Extension Point | Interface/Type | Purpose |
@@ -650,34 +713,42 @@ String name = commarea.getString("CUST-NAME").trim();
 | `CobolFile` | interface | Custom file backends (JDBC, cloud, message queues) |
 | `ConnectionFactory` | `@FunctionalInterface` | Pluggable connection acquisition/release |
 | `ValueTracker` | interface | Audit trail for all Decimal arithmetic and variable changes |
-| `Inspect.replaceAll(IntUnaryOperator)` | lambda | Custom character-level transformations |
-| `Program.onDisplay / onAccept` | lambdas | Redirect console I/O |
-| `Search.when(IntPredicate, IntConsumer)` | lambdas | Custom search conditions and actions |
+| `CicsProgram` | `@FunctionalInterface` | Transaction handler deployed into a CICS region |
+| `RecordCodec` / `FieldCodec` | interface + ServiceLoader | Pluggable data format codecs |
+| `MessagePort` | interface | Messaging with delivery guarantees (fire-and-forget/at-least-once/exactly-once) |
+| `SystemCall` | interface | POSIX system call mapping (pluggable for JNI/Panama) |
 
 ## Building
 
 ```bash
 export JAVA_HOME=/path/to/jdk17
-mvn clean test        # run all tests
+mvn clean test        # run all tests (328 tests)
 mvn package           # build the runner JAR
 ```
 
 Requires Java 17+ and Maven. Tests use JUnit 5, H2, and SQLite.
+Zero external production dependencies.
 
 ## Status
 
-Working prototype with 167 passing tests across 55 source files. The core COBOL
-runtime semantics, transpiler, runner, and mainframe interop layer are implemented.
+Working prototype with **328 passing tests** across 83+ source files (~21,000 lines).
 
-Remaining work for production transpilation:
+Implemented:
+- Full COBOL runtime: Record, Decimal, Field, Variable, Program, all COBOL verbs
+- Transpiler: lexer, parser (recursive descent), Java emitter, COPY/REPLACE preprocessor
+- Runner: transpile, compile, and execute COBOL programs directly
+- SQL: SELECT INTO, cursors, DML, SqlSession, ConnectionFactory.jdbc().cached()
+- Interop: EBCDIC codec, copybook importer, mainframe file reader/writer
+- CICS: transaction container with hot-deploy, TS queues, LINK/XCTL, SYNCPOINT
+- Messaging: MessagePort with three delivery semantics
+- Codecs: JSON/XML generate/parse, ServiceLoader plugin system
+- SystemCall: POSIX function mapping for transpiled CALL statements
 
-- CALL with LINKAGE SECTION (inter-program communication)
-- Report Writer (REPORT SECTION)
+Remaining:
+- Report Writer (REPORT SECTION — declarative report generation)
 - Screen Section (terminal UI)
-- CICS middleware commands (beyond COMMAREA — screen maps, queues, task control)
-- COPY/REPLACE preprocessor (copybook inclusion with text replacement)
-- SPECIAL-NAMES (DECIMAL-POINT IS COMMA, etc.)
-- Additional EBCDIC code pages beyond CP037/CP500/CP1047
+- OO COBOL (CLASS-ID, METHOD-ID, INVOKE)
+- Additional EBCDIC code pages
 
 ## License
 
