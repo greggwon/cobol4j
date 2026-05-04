@@ -10,6 +10,8 @@ calls against a runtime that already understands COBOL semantics.** The transpil
 becomes a thin syntax-directed translator. All the hard behavioral correctness lives
 in one testable, versioned library.
 
+See [DESIGN.md](DESIGN.md) for the details.
+
 # Building and Using cobol4j
 
 This software is built using maven.  There is a Makefile in the top level directory 
