@@ -17,6 +17,10 @@ that will build the java source files, run tests and package everything into a f
 jar a thin jar and install to ~/.md.  Have a look at the Makefile for the details
 of each of the targets.
 
+# All the Details...
+The following sections detail all the attributes of the system and what you can expect.
+Please have a look, and you can discover what's really here for use.
+
 ## Why No BigDecimal, No float, No double
 
 COBOL has **no floating point**. All COBOL arithmetic is fixed-point decimal — every
