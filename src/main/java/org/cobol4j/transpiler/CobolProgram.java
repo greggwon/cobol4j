@@ -40,8 +40,17 @@ public record CobolProgram(
         String redefines,    // null if not redefining
         int occurs,          // 0 = not an array
         String dependingOn,  // null if not OCCURS DEPENDING ON
-        List<Condition88> conditions
-    ) {}
+        List<Condition88> conditions,
+        String signClause    // null = default TRAILING, e.g. "LEADING", "TRAILING_SEPARATE", "LEADING_SEPARATE"
+    ) {
+        /** Backward-compatible constructor without signClause. */
+        public DataEntry(int level, String name, String pic, String usage,
+                         String value, String redefines, int occurs,
+                         String dependingOn, List<Condition88> conditions) {
+            this(level, name, pic, usage, value, redefines, occurs,
+                 dependingOn, conditions, null);
+        }
+    }
 
     /**
      * A level-88 condition name entry.

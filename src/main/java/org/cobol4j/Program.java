@@ -67,13 +67,16 @@ public final class Program {
     private final ProgramContext context;
     private final List<String> paragraphOrder;
     private final List<Record> records;
+    private final List<String> linkageNames; // ordered linkage parameter names
 
     private Program(String name, ProgramContext context,
-                    List<String> paragraphOrder, List<Record> records) {
+                    List<String> paragraphOrder, List<Record> records,
+                    List<String> linkageNames) {
         this.name = name;
         this.context = context;
         this.paragraphOrder = paragraphOrder;
         this.records = records;
+        this.linkageNames = linkageNames;
     }
 
     // ── Factory ─────────────────────────────────────────────────────
@@ -92,6 +95,33 @@ public final class Program {
     public void run() {
         if (paragraphOrder.isEmpty()) return;
         run(paragraphOrder.get(0));
+    }
+
+    /**
+     * Run the program with linkage parameters bound to the given Fields.
+     * The called program operates on the caller's Field references (by reference),
+     * just like COBOL's CALL ... USING with BY REFERENCE semantics.
+     *
+     * @param params the caller's Fields, positionally matched to this program's
+     *               LINKAGE SECTION declarations
+     */
+    public void runWithLinkage(Field... params) {
+        if (linkageNames.size() != params.length) {
+            throw new IllegalArgumentException(
+                "Program '" + name + "' expects " + linkageNames.size() +
+                " linkage parameters but received " + params.length);
+        }
+        // Bind the caller's Fields to the linkage parameter names in context
+        Map<String, Field> linkageBindings = new LinkedHashMap<>();
+        for (int i = 0; i < linkageNames.size(); i++) {
+            linkageBindings.put(linkageNames.get(i), params[i]);
+        }
+        context.bindLinkage(linkageBindings);
+        try {
+            run();
+        } finally {
+            context.clearLinkage();
+        }
     }
 
     /**
@@ -143,11 +173,24 @@ public final class Program {
         private final Map<String, Consumer<ProgramContext>> paragraphs = new LinkedHashMap<>();
         private final List<String> paragraphOrder = new ArrayList<>();
         private final List<Record> records = new ArrayList<>();
+        private final List<String> linkageNames = new ArrayList<>();
         private Consumer<String> displayHandler;
         private Supplier<String> acceptHandler;
 
         Builder(String name) {
             this.name = name;
+        }
+
+        /**
+         * Declare a LINKAGE SECTION parameter.
+         * Parameters are positionally matched when the program is called via
+         * {@link Program#runWithLinkage(Field...)}.
+         * The pic string is documentary (type checking is not enforced at runtime,
+         * matching COBOL's behavior where the caller's layout determines storage).
+         */
+        public Builder linkage(String name, String pic) {
+            linkageNames.add(name);
+            return this;
         }
 
         /** Register records in working storage. */
@@ -200,7 +243,8 @@ public final class Program {
             if (displayHandler != null) context.onDisplay(displayHandler);
             if (acceptHandler != null) context.onAccept(acceptHandler);
 
-            return new Program(name, context, paragraphOrder, List.copyOf(records));
+            return new Program(name, context, paragraphOrder, List.copyOf(records),
+                               List.copyOf(linkageNames));
         }
     }
 }

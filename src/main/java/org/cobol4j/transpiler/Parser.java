@@ -152,6 +152,7 @@ public final class Parser {
         String redefines = null;
         int occurs = 0;
         String dependingOn = null;
+        String signClause = null;
 
         // Parse clauses until period
         while (!atEnd() && !atPeriod()) {
@@ -166,6 +167,9 @@ public final class Parser {
                        || matchWord("COMPUTATIONAL-3") || matchWord("BINARY")
                        || matchWord("PACKED-DECIMAL")) {
                 usage = tokens.get(pos - 1).value(); // the word we just matched
+            } else if (matchWord("SIGN")) {
+                consumeIf("IS");
+                signClause = parseSignClause();
             } else if (matchWord("VALUE")) {
                 consumeIf("IS");
                 value = parseValueLiteral();
@@ -201,8 +205,34 @@ public final class Parser {
         }
 
         CobolProgram.DataEntry entry = new CobolProgram.DataEntry(
-            level, name, pic, usage, value, redefines, occurs, dependingOn, conditions);
+            level, name, pic, usage, value, redefines, occurs, dependingOn, conditions, signClause);
         return List.of(entry);
+    }
+
+    /**
+     * Parse the SIGN clause: LEADING | TRAILING, optionally followed by SEPARATE [CHARACTER].
+     * Returns one of: "TRAILING", "LEADING", "TRAILING_SEPARATE", "LEADING_SEPARATE".
+     */
+    private String parseSignClause() {
+        boolean leading = false;
+        if (matchWord("LEADING")) {
+            leading = true;
+        } else if (matchWord("TRAILING")) {
+            leading = false;
+        } else {
+            // Default to trailing if neither specified
+            return "TRAILING";
+        }
+        boolean separate = false;
+        if (matchWord("SEPARATE")) {
+            separate = true;
+            consumeIf("CHARACTER");
+        }
+        if (leading) {
+            return separate ? "LEADING_SEPARATE" : "LEADING";
+        } else {
+            return separate ? "TRAILING_SEPARATE" : "TRAILING";
+        }
     }
 
     private List<CobolProgram.DataEntry> parse88Level() {
@@ -255,7 +285,18 @@ public final class Parser {
         if (t.type() == Token.Type.WORD) {
             // PIC characters: S, 9, X, A, V, Z, B, P, etc.
             String v = t.value();
-            return v.matches("[SXA9VZPB*+\\-$/,0]+") || v.matches("[SXA9VZPB*+\\-$/,0]+(\\(\\d+\\))?.*");
+            // Reject COBOL keywords that could follow a PIC string
+            if (v.equals("SIGN") || v.equals("VALUE") || v.equals("USAGE")
+                || v.equals("COMP") || v.equals("COMP-3") || v.equals("COMP-4")
+                || v.equals("COMP-5") || v.equals("COMPUTATIONAL")
+                || v.equals("BINARY") || v.equals("PACKED-DECIMAL")
+                || v.equals("OCCURS") || v.equals("REDEFINES")
+                || v.equals("IS") || v.equals("TRAILING") || v.equals("LEADING")
+                || v.equals("SEPARATE") || v.equals("CHARACTER")) {
+                return false;
+            }
+            return v.matches("[SXA9VZPB*+\\-$/,0]+")
+                || v.matches("[SXA9VZPB*+\\-$/,0]+(\\(\\d+\\))+");
         }
         if (t.type() == Token.Type.NUMBER) return true; // digits in PIC
         if (t.type() == Token.Type.LPAREN || t.type() == Token.Type.RPAREN) return true;
@@ -407,11 +448,34 @@ public final class Parser {
             }
             source = funcExpr.toString();
         } else {
-            source = parseValueLiteral();
+            // Check for reference modification: FIELD(pos:len)
+            // Peek ahead: if current is WORD and next is LPAREN, might be ref mod
+            if (current().type() == Token.Type.WORD
+                && pos + 1 < tokens.size()
+                && tokens.get(pos + 1).type() == Token.Type.LPAREN) {
+                String fieldName = current().value(); advance(); // consume field name
+                advance(); // consume (
+                String refPos = current().value(); advance(); // position
+                if (current().type() == Token.Type.COLON) {
+                    advance(); // consume :
+                    String refLen = current().value(); advance(); // length
+                    if (current().type() == Token.Type.RPAREN) advance();
+                    source = fieldName + "(" + refPos + ":" + refLen + ")";
+                } else {
+                    // Not ref mod — subscript; reconstruct as plain field
+                    while (!atEnd() && current().type() != Token.Type.RPAREN) advance();
+                    if (current().type() == Token.Type.RPAREN) advance();
+                    source = "\"" + fieldName + "\"";
+                }
+            } else {
+                source = parseValueLiteral();
+            }
         }
         expect("TO");
         List<String> targets = new ArrayList<>();
-        while (!atEnd() && !atPeriod() && !isVerb(current().value())) {
+        while (!atEnd() && !atPeriod()
+               && !isVerb(current().value())
+               && !isScopeTerminator(current().value())) {
             targets.add(current().value());
             advance();
         }
@@ -553,6 +617,12 @@ public final class Parser {
 
     private Statement parsePerform() {
         advance(); // consume PERFORM
+
+        // Check for inline PERFORM (no paragraph name — UNTIL/VARYING/TIMES comes immediately)
+        if (peek("UNTIL") || peek("VARYING")) {
+            return parseInlinePerform();
+        }
+
         String paragraph = current().value(); advance();
         String thru = null;
         Statement.PerformType type = Statement.PerformType.SIMPLE;
@@ -582,10 +652,32 @@ public final class Parser {
         return new Statement.Perform(paragraph, thru, type, varying, from, by, until);
     }
 
+    private Statement parseInlinePerform() {
+        Statement.Condition until = null;
+        if (matchWord("UNTIL")) {
+            until = parseCondition();
+        }
+        // Collect inline statements until END-PERFORM
+        List<Statement> body = new ArrayList<>();
+        while (!atEnd() && !peek("END-PERFORM")) {
+            try {
+                Statement s = parseStatement();
+                if (s != null) body.add(s);
+            } catch (ParseException e) {
+                skipToSyncPoint();
+            }
+        }
+        matchWord("END-PERFORM");
+        consumeStatementEnd();
+        return new Statement.InlinePerform(until, body);
+    }
+
     private Statement parseDisplay() {
         advance(); // consume DISPLAY
         List<String> items = new ArrayList<>();
-        while (!atEnd() && !atPeriod() && !isVerb(current().value())) {
+        while (!atEnd() && !atPeriod()
+               && !isVerb(current().value())
+               && !isScopeTerminator(current().value())) {
             if (current().type() == Token.Type.STRING) {
                 items.add("\"" + current().value() + "\"");
             } else {
@@ -1071,8 +1163,8 @@ public final class Parser {
 
         // Simple condition-name test (88-level): just the name
         if (atEnd() || atPeriod() || isVerb(current().value())
-            || peek("THEN") || peek("END-IF") || peek("END-EVALUATE")
-            || peek("AFTER") || peek("WHEN")) {
+            || isScopeTerminator(current().value())
+            || peek("AFTER")) {
             return new Statement.Condition(left, "IS-TRUE", null, negated);
         }
 
@@ -1086,18 +1178,42 @@ public final class Parser {
             operator = "=";
         } else if (matchWord("GREATER")) {
             consumeIf("THAN");
-            operator = ">";
+            // GREATER THAN OR EQUAL TO
+            if (matchWord("OR")) {
+                consumeIf("EQUAL");
+                consumeIf("TO");
+                operator = ">=";
+            } else {
+                operator = ">";
+            }
         } else if (matchWord("LESS")) {
             consumeIf("THAN");
-            operator = "<";
+            // LESS THAN OR EQUAL TO
+            if (matchWord("OR")) {
+                consumeIf("EQUAL");
+                consumeIf("TO");
+                operator = "<=";
+            } else {
+                operator = "<";
+            }
+        } else if (matchWord(">=")) {
+            operator = ">=";
+        } else if (matchWord("<=")) {
+            operator = "<=";
         } else if (matchWord(">")) {
             operator = ">";
         } else if (matchWord("<")) {
             operator = "<";
         } else if (current().type() == Token.Type.GREATER) {
-            operator = ">"; advance();
+            advance();
+            // Check for >= (> followed by =)
+            if (current().type() == Token.Type.EQUALS) { advance(); operator = ">="; }
+            else operator = ">";
         } else if (current().type() == Token.Type.LESS) {
-            operator = "<"; advance();
+            advance();
+            // Check for <= (< followed by =)
+            if (current().type() == Token.Type.EQUALS) { advance(); operator = "<="; }
+            else operator = "<";
         } else if (current().type() == Token.Type.EQUALS) {
             operator = "="; advance();
         } else {
@@ -1238,6 +1354,25 @@ public final class Parser {
                  "GO", "STOP", "SET", "INITIALIZE", "INSPECT",
                  "STRING", "UNSTRING", "SEARCH", "SORT", "MERGE",
                  "CALL", "EXIT", "EXEC", "CONTINUE" -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Scope terminators end a block within a statement — they're not verbs,
+     * but token-collecting loops must stop before them or they'll be consumed
+     * as field names, targets, or operands.
+     */
+    private static boolean isScopeTerminator(String word) {
+        return switch (word.toUpperCase()) {
+            case "ELSE", "END-IF", "END-EVALUATE", "END-PERFORM",
+                 "END-READ", "END-WRITE", "END-REWRITE", "END-DELETE",
+                 "END-ADD", "END-SUBTRACT", "END-MULTIPLY", "END-DIVIDE",
+                 "END-COMPUTE", "END-CALL", "END-STRING", "END-UNSTRING",
+                 "END-SEARCH", "END-EXEC",
+                 "WHEN", "NOT", "ON",
+                 "AT", "INVALID", "INTO",
+                 "THEN" -> true;
             default -> false;
         };
     }

@@ -45,6 +45,7 @@ public final class ProgramContext {
     private Consumer<String> displayHandler;
     private Supplier<String> acceptHandler;
     private final List<String> displayOutput;
+    private Map<String, Field> linkageBindings; // bound during CALL ... USING
 
     ProgramContext(Map<String, Consumer<ProgramContext>> paragraphs,
                    List<String> paragraphOrder) {
@@ -354,12 +355,84 @@ public final class ProgramContext {
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * CALL subprogram USING records.
+     * CALL subprogram USING records (legacy — no linkage binding).
      * The called program shares the passed records (by reference, like COBOL).
      */
     public ProgramContext call(Program subprogram, Record... using) {
         subprogram.run();
         return this;
+    }
+
+    /**
+     * CALL subprogram USING fields — with LINKAGE SECTION binding.
+     * <p>
+     * The called program's LINKAGE SECTION parameters are bound to the caller's
+     * Field references. Because Fields are live references into byte buffers,
+     * this implements BY REFERENCE semantics: the called program reads and writes
+     * the caller's data directly.
+     * <pre>{@code
+     * ctx.call(calcTax,
+     *     callerRec.field("WS-AMOUNT"),
+     *     callerRec.field("WS-RATE"),
+     *     callerRec.field("WS-RESULT"));
+     * // After the call, WS-RESULT has been updated by calcTax
+     * }</pre>
+     */
+    public ProgramContext call(Program subprogram, Field... params) {
+        subprogram.runWithLinkage(params);
+        return this;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  LINKAGE SECTION — access bound parameters from within a called program
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Get a linkage Field by its declared name.
+     * This returns the caller's Field reference — reading or writing through it
+     * reads/writes the caller's Record buffer (BY REFERENCE semantics).
+     *
+     * @throws IllegalStateException if no linkage is currently bound
+     * @throws IllegalArgumentException if the name is not a declared linkage parameter
+     */
+    public Field linkageField(String name) {
+        if (linkageBindings == null) {
+            throw new IllegalStateException(
+                "No linkage parameters bound — this program was not called with USING");
+        }
+        Field field = linkageBindings.get(name);
+        if (field == null) {
+            throw new IllegalArgumentException(
+                "No linkage parameter named '" + name + "'");
+        }
+        return field;
+    }
+
+    /**
+     * Get a linkage parameter's numeric value as Decimal.
+     * Shortcut for {@code linkageField(name).get()}.
+     */
+    public Decimal linkageDecimal(String name) {
+        return linkageField(name).get();
+    }
+
+    /**
+     * MOVE a Decimal value to a linkage parameter.
+     * Shortcut for {@code linkageField(name).move(value)}.
+     */
+    public ProgramContext linkageMove(String name, Decimal value) {
+        linkageField(name).move(value);
+        return this;
+    }
+
+    // ── Linkage binding (package-private, called by Program) ─────────
+
+    void bindLinkage(Map<String, Field> bindings) {
+        this.linkageBindings = bindings;
+    }
+
+    void clearLinkage() {
+        this.linkageBindings = null;
     }
 
     // ═══════════════════════════════════════════════════════════════

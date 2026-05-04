@@ -244,12 +244,20 @@ public final class Lexer {
     private int readNumber(String line, int start, int lineNum) {
         int i = start;
         StringBuilder sb = new StringBuilder();
-        // Digits and decimal point
+        // Digits and decimal point (but not a trailing period that's a sentence terminator)
         while (i < line.length()) {
             char c = line.charAt(i);
-            if (Character.isDigit(c) || c == '.') {
+            if (Character.isDigit(c)) {
                 sb.append(c);
                 i++;
+            } else if (c == '.') {
+                // Period is a decimal point only if followed by a digit
+                if (i + 1 < line.length() && Character.isDigit(line.charAt(i + 1))) {
+                    sb.append(c);
+                    i++;
+                } else {
+                    break; // trailing period = sentence terminator, not decimal
+                }
             } else {
                 break;
             }

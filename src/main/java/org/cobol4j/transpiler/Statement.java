@@ -61,6 +61,7 @@ public sealed interface Statement {
                    Condition until) implements Statement {}
     enum PerformType { SIMPLE, THRU, TIMES, UNTIL, VARYING }
 
+    record InlinePerform(Condition until, List<Statement> body) implements Statement {}
     record GoTo(String paragraph) implements Statement {}
     record StopRun() implements Statement {}
     record ExitParagraph() implements Statement {}

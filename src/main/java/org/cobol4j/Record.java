@@ -27,6 +27,8 @@ import java.nio.ByteOrder;
 import java.util.*;
 import java.util.function.Consumer;
 
+import org.cobol4j.interop.Ebcdic;
+
 /**
  * A COBOL record: a named, hierarchical group of fields backed by a byte buffer.
  * <p>
@@ -59,18 +61,21 @@ public final class Record {
     private final Map<String, Condition> conditionsByName;  // all 88-levels
     private final List<FieldDef> topLevelFields;            // hierarchical
     private final byte[] data;
+    private final Ebcdic encoding;  // null = ASCII (default), non-null = EBCDIC mode
 
     private Record(String name, int totalSize,
                    Map<String, FieldDef> fieldsByName,
                    Map<String, Condition> conditionsByName,
                    List<FieldDef> topLevelFields,
-                   byte[] data) {
+                   byte[] data,
+                   Ebcdic encoding) {
         this.name = name;
         this.totalSize = totalSize;
         this.fieldsByName = fieldsByName;
         this.conditionsByName = conditionsByName;
         this.topLevelFields = topLevelFields;
         this.data = data;
+        this.encoding = encoding;
     }
 
     // ── Factory ─────────────────────────────────────────────────────
@@ -83,15 +88,15 @@ public final class Record {
     /** Create a new instance with the same definition but a fresh (space-filled) buffer. */
     public Record newInstance() {
         byte[] buf = new byte[totalSize];
-        Arrays.fill(buf, (byte) ' ');
+        Arrays.fill(buf, spaceByte());
         return new Record(name, totalSize, fieldsByName, conditionsByName,
-                          topLevelFields, buf);
+                          topLevelFields, buf, encoding);
     }
 
     /** Create a new instance initialized as a copy of this record's data. */
     public Record duplicate() {
         return new Record(name, totalSize, fieldsByName, conditionsByName,
-                          topLevelFields, Arrays.copyOf(data, data.length));
+                          topLevelFields, Arrays.copyOf(data, data.length), encoding);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -154,7 +159,7 @@ public final class Record {
         int copyLen = Math.min(source.length, data.length);
         System.arraycopy(source, 0, data, 0, copyLen);
         if (copyLen < data.length) {
-            Arrays.fill(data, copyLen, data.length, (byte) ' ');
+            Arrays.fill(data, copyLen, data.length, spaceByte());
         }
         return this;
     }
@@ -190,6 +195,18 @@ public final class Record {
             encodeNumeric(f, f.offset(), value.toBigDecimal());
         } else {
             moveToField(f, f.offset(), value.toString());
+        }
+        return this;
+    }
+
+    /** MOVE a Decimal value to an OCCURS element. */
+    public Record move(String fieldName, int index, Decimal value) {
+        FieldDef f = requireField(fieldName);
+        int offset = f.offsetForIndex(index);
+        if (f.isNumeric()) {
+            encodeNumeric(f, offset, value.toBigDecimal());
+        } else {
+            moveToField(f, offset, value.toString());
         }
         return this;
     }
@@ -259,7 +276,7 @@ public final class Record {
     /** MOVE SPACES — fill field with spaces. */
     public Record moveSpaces(String fieldName) {
         FieldDef f = requireField(fieldName);
-        Arrays.fill(data, f.offset(), f.offset() + f.size(), (byte) ' ');
+        Arrays.fill(data, f.offset(), f.offset() + f.size(), spaceByte());
         return this;
     }
 
@@ -269,7 +286,7 @@ public final class Record {
         if (f.isNumeric()) {
             encodeNumeric(f, f.offset(), BigDecimal.ZERO);
         } else {
-            Arrays.fill(data, f.offset(), f.offset() + f.size(), (byte) '0');
+            Arrays.fill(data, f.offset(), f.offset() + f.size(), zeroByte());
         }
         return this;
     }
@@ -315,17 +332,36 @@ public final class Record {
         String val = value == null ? "" : value;
         int size = elementSize(f);
         // Fill with spaces first
-        Arrays.fill(data, offset, offset + size, (byte) ' ');
+        Arrays.fill(data, offset, offset + size, spaceByte());
         // Copy characters, left-justified, truncate if too long
         int copyLen = Math.min(val.length(), size);
-        for (int i = 0; i < copyLen; i++) {
-            data[offset + i] = (byte) val.charAt(i);
+        if (encoding != null) {
+            // Encode ASCII string to EBCDIC bytes
+            byte[] encoded = encoding.encode(val.substring(0, copyLen).getBytes());
+            System.arraycopy(encoded, 0, data, offset, copyLen);
+        } else {
+            for (int i = 0; i < copyLen; i++) {
+                data[offset + i] = (byte) val.charAt(i);
+            }
         }
     }
 
-    /** Effective size of one element — stride for OCCURS fields, full size otherwise. */
+    /**
+     * Effective size of one element.
+     * For fields with their own OCCURS: stride (= size / occurs).
+     * For fields inheriting OCCURS from a parent group: size (their own byte width).
+     * For non-array fields: size.
+     */
     private static int elementSize(FieldDef f) {
-        return f.isArray() ? f.stride() : f.size();
+        if (!f.isArray()) return f.size();
+        // If the field has its own OCCURS, size == stride * occurs.
+        // If it inherited OCCURS from a parent group, size < stride * occurs
+        // (size is just the field's own width, stride is the parent group's stride).
+        if (f.size() == f.stride() * f.occurs()) {
+            return f.stride();
+        }
+        // Inherited OCCURS — element size is the field's own size
+        return f.size();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -355,14 +391,24 @@ public final class Record {
     }
 
     /**
-     * DISPLAY numeric: one ASCII digit per byte, sign in the zone of the last byte.
-     * Decimal alignment: the PIC's V position determines where digits land.
+     * DISPLAY numeric: one digit per byte, sign encoding governed by the
+     * field's {@link SignPosition}.
+     * <p>
+     * In ASCII mode: digits are 0x30-0x39, sign overpunch uses ASCII zones ({/A-I positive, }/J-R negative).
+     * In EBCDIC mode: digits are 0xF0-0xF9, sign overpunch uses EBCDIC zones (0xC_ positive, 0xD_ negative).
+     * <ul>
+     *   <li>TRAILING — sign overpunch in the zone of the last byte (default)</li>
+     *   <li>LEADING — sign overpunch in the zone of the first byte</li>
+     *   <li>TRAILING_SEPARATE — digits followed by '+' or '-' (1 extra byte)</li>
+     *   <li>LEADING_SEPARATE — '+' or '-' followed by digits (1 extra byte)</li>
+     * </ul>
      */
     private void encodeDisplay(FieldDef f, int offset, BigDecimal value) {
         Pic pic = f.pic();
         int intDigits = pic.integerDigits();
         int decDigits = pic.decimalDigits();
         int totalDigits = intDigits + decDigits;
+        SignPosition signPos = f.signPosition();
 
         // Scale to remove decimal point
         BigDecimal scaled = value.movePointRight(decDigits)
@@ -377,58 +423,253 @@ public final class Record {
             digits = digits.substring(digits.length() - totalDigits);
         }
 
-        // Write digits as ASCII
-        for (int i = 0; i < totalDigits; i++) {
-            data[offset + i] = (byte) digits.charAt(i);
+        if (encoding != null) {
+            // EBCDIC mode: digits are 0xF0-0xF9, sign overpunch uses 0xC_/0xD_ zones
+            encodeDisplayEbcdic(f, offset, digits, negative, pic, signPos, totalDigits);
+        } else {
+            // ASCII mode
+            encodeDisplayAscii(f, offset, digits, negative, pic, signPos, totalDigits);
         }
+    }
 
-        // Trailing sign: encode in the zone nibble of the last byte
-        // For simplicity in this prototype, we use ASCII sign overpunch:
-        // positive: last digit stays as-is (or we store a trailing '+'/digit)
-        // COBOL convention: positive = {, A-I for 0-9; negative = }, J-R for 0-9
+    private void encodeDisplayAscii(FieldDef f, int offset, String digits,
+                                     boolean negative, Pic pic, SignPosition signPos, int totalDigits) {
         if (pic.isSigned()) {
-            int lastDigit = digits.charAt(totalDigits - 1) - '0';
-            if (negative) {
-                // EBCDIC sign overpunch for negative: } for 0, J-R for 1-9
-                data[offset + totalDigits - 1] = (byte) (lastDigit == 0 ? '}' : ('J' - 1 + lastDigit));
-            } else {
-                // Positive: { for 0, A-I for 1-9
-                data[offset + totalDigits - 1] = (byte) (lastDigit == 0 ? '{' : ('A' - 1 + lastDigit));
+            switch (signPos) {
+                case TRAILING_SEPARATE -> {
+                    for (int i = 0; i < totalDigits; i++) {
+                        data[offset + i] = (byte) digits.charAt(i);
+                    }
+                    data[offset + totalDigits] = (byte) (negative ? '-' : '+');
+                }
+                case LEADING_SEPARATE -> {
+                    data[offset] = (byte) (negative ? '-' : '+');
+                    for (int i = 0; i < totalDigits; i++) {
+                        data[offset + 1 + i] = (byte) digits.charAt(i);
+                    }
+                }
+                case LEADING -> {
+                    for (int i = 0; i < totalDigits; i++) {
+                        data[offset + i] = (byte) digits.charAt(i);
+                    }
+                    int firstDigit = digits.charAt(0) - '0';
+                    if (negative) {
+                        data[offset] = (byte) (firstDigit == 0 ? '}' : ('J' - 1 + firstDigit));
+                    } else {
+                        data[offset] = (byte) (firstDigit == 0 ? '{' : ('A' - 1 + firstDigit));
+                    }
+                }
+                default -> { // TRAILING (default)
+                    for (int i = 0; i < totalDigits; i++) {
+                        data[offset + i] = (byte) digits.charAt(i);
+                    }
+                    int lastDigit = digits.charAt(totalDigits - 1) - '0';
+                    if (negative) {
+                        data[offset + totalDigits - 1] = (byte) (lastDigit == 0 ? '}' : ('J' - 1 + lastDigit));
+                    } else {
+                        data[offset + totalDigits - 1] = (byte) (lastDigit == 0 ? '{' : ('A' - 1 + lastDigit));
+                    }
+                }
+            }
+        } else {
+            for (int i = 0; i < totalDigits; i++) {
+                data[offset + i] = (byte) digits.charAt(i);
+            }
+        }
+    }
+
+    private void encodeDisplayEbcdic(FieldDef f, int offset, String digits,
+                                      boolean negative, Pic pic, SignPosition signPos, int totalDigits) {
+        if (pic.isSigned()) {
+            switch (signPos) {
+                case TRAILING_SEPARATE -> {
+                    for (int i = 0; i < totalDigits; i++) {
+                        data[offset + i] = Ebcdic.encodeUnsignedDigit(digits.charAt(i) - '0');
+                    }
+                    // EBCDIC '+' = 0x4E, '-' = 0x60
+                    data[offset + totalDigits] = (byte) (negative ? 0x60 : 0x4E);
+                }
+                case LEADING_SEPARATE -> {
+                    data[offset] = (byte) (negative ? 0x60 : 0x4E);
+                    for (int i = 0; i < totalDigits; i++) {
+                        data[offset + 1 + i] = Ebcdic.encodeUnsignedDigit(digits.charAt(i) - '0');
+                    }
+                }
+                case LEADING -> {
+                    for (int i = 0; i < totalDigits; i++) {
+                        data[offset + i] = Ebcdic.encodeUnsignedDigit(digits.charAt(i) - '0');
+                    }
+                    int firstDigit = digits.charAt(0) - '0';
+                    data[offset] = Ebcdic.encodeSignOverpunch(firstDigit, negative);
+                }
+                default -> { // TRAILING (default)
+                    for (int i = 0; i < totalDigits; i++) {
+                        data[offset + i] = Ebcdic.encodeUnsignedDigit(digits.charAt(i) - '0');
+                    }
+                    int lastDigit = digits.charAt(totalDigits - 1) - '0';
+                    data[offset + totalDigits - 1] = Ebcdic.encodeSignOverpunch(lastDigit, negative);
+                }
+            }
+        } else {
+            for (int i = 0; i < totalDigits; i++) {
+                data[offset + i] = Ebcdic.encodeUnsignedDigit(digits.charAt(i) - '0');
             }
         }
     }
 
     private BigDecimal decodeDisplayNumeric(FieldDef f, int offset) {
+        if (encoding != null) {
+            return decodeDisplayNumericEbcdic(f, offset);
+        }
+        return decodeDisplayNumericAscii(f, offset);
+    }
+
+    private BigDecimal decodeDisplayNumericAscii(FieldDef f, int offset) {
         Pic pic = f.pic();
         int totalDigits = pic.totalDigits();
+        SignPosition signPos = f.signPosition();
         StringBuilder digits = new StringBuilder(totalDigits);
         boolean negative = false;
 
-        for (int i = 0; i < totalDigits; i++) {
-            byte b = data[offset + i];
-            char c = (char) (b & 0xFF);
-
-            if (i == totalDigits - 1 && pic.isSigned()) {
-                // Decode sign overpunch from last byte
-                if (c >= '0' && c <= '9') {
-                    digits.append(c);
-                } else if (c == '{') {
-                    digits.append('0');
-                } else if (c >= 'A' && c <= 'I') {
-                    digits.append((char) ('1' + (c - 'A')));
-                } else if (c == '}') {
-                    digits.append('0');
-                    negative = true;
-                } else if (c >= 'J' && c <= 'R') {
-                    digits.append((char) ('1' + (c - 'J')));
-                    negative = true;
-                } else {
-                    digits.append('0');
+        if (pic.isSigned()) {
+            switch (signPos) {
+                case TRAILING_SEPARATE -> {
+                    for (int i = 0; i < totalDigits; i++) {
+                        char c = (char) (data[offset + i] & 0xFF);
+                        digits.append(c >= '0' && c <= '9' ? c : '0');
+                    }
+                    char signChar = (char) (data[offset + totalDigits] & 0xFF);
+                    negative = (signChar == '-');
                 }
-            } else if (c >= '0' && c <= '9') {
-                digits.append(c);
-            } else {
-                digits.append('0'); // non-numeric byte → treat as zero
+                case LEADING_SEPARATE -> {
+                    char signChar = (char) (data[offset] & 0xFF);
+                    negative = (signChar == '-');
+                    for (int i = 0; i < totalDigits; i++) {
+                        char c = (char) (data[offset + 1 + i] & 0xFF);
+                        digits.append(c >= '0' && c <= '9' ? c : '0');
+                    }
+                }
+                case LEADING -> {
+                    for (int i = 0; i < totalDigits; i++) {
+                        byte b = data[offset + i];
+                        char c = (char) (b & 0xFF);
+                        if (i == 0) {
+                            if (c >= '0' && c <= '9') {
+                                digits.append(c);
+                            } else if (c == '{') {
+                                digits.append('0');
+                            } else if (c >= 'A' && c <= 'I') {
+                                digits.append((char) ('1' + (c - 'A')));
+                            } else if (c == '}') {
+                                digits.append('0');
+                                negative = true;
+                            } else if (c >= 'J' && c <= 'R') {
+                                digits.append((char) ('1' + (c - 'J')));
+                                negative = true;
+                            } else {
+                                digits.append('0');
+                            }
+                        } else if (c >= '0' && c <= '9') {
+                            digits.append(c);
+                        } else {
+                            digits.append('0');
+                        }
+                    }
+                }
+                default -> { // TRAILING (default)
+                    for (int i = 0; i < totalDigits; i++) {
+                        byte b = data[offset + i];
+                        char c = (char) (b & 0xFF);
+                        if (i == totalDigits - 1) {
+                            if (c >= '0' && c <= '9') {
+                                digits.append(c);
+                            } else if (c == '{') {
+                                digits.append('0');
+                            } else if (c >= 'A' && c <= 'I') {
+                                digits.append((char) ('1' + (c - 'A')));
+                            } else if (c == '}') {
+                                digits.append('0');
+                                negative = true;
+                            } else if (c >= 'J' && c <= 'R') {
+                                digits.append((char) ('1' + (c - 'J')));
+                                negative = true;
+                            } else {
+                                digits.append('0');
+                            }
+                        } else if (c >= '0' && c <= '9') {
+                            digits.append(c);
+                        } else {
+                            digits.append('0');
+                        }
+                    }
+                }
+            }
+        } else {
+            for (int i = 0; i < totalDigits; i++) {
+                char c = (char) (data[offset + i] & 0xFF);
+                digits.append(c >= '0' && c <= '9' ? c : '0');
+            }
+        }
+
+        BigDecimal result = new BigDecimal(new BigInteger(digits.toString()), pic.decimalDigits());
+        return negative ? result.negate() : result;
+    }
+
+    private BigDecimal decodeDisplayNumericEbcdic(FieldDef f, int offset) {
+        Pic pic = f.pic();
+        int totalDigits = pic.totalDigits();
+        SignPosition signPos = f.signPosition();
+        StringBuilder digits = new StringBuilder(totalDigits);
+        boolean negative = false;
+
+        if (pic.isSigned()) {
+            switch (signPos) {
+                case TRAILING_SEPARATE -> {
+                    for (int i = 0; i < totalDigits; i++) {
+                        int b = data[offset + i] & 0xFF;
+                        digits.append((char) ('0' + (b & 0x0F)));
+                    }
+                    int signByte = data[offset + totalDigits] & 0xFF;
+                    // EBCDIC '-' = 0x60
+                    negative = (signByte == 0x60);
+                }
+                case LEADING_SEPARATE -> {
+                    int signByte = data[offset] & 0xFF;
+                    negative = (signByte == 0x60);
+                    for (int i = 0; i < totalDigits; i++) {
+                        int b = data[offset + 1 + i] & 0xFF;
+                        digits.append((char) ('0' + (b & 0x0F)));
+                    }
+                }
+                case LEADING -> {
+                    for (int i = 0; i < totalDigits; i++) {
+                        int b = data[offset + i] & 0xFF;
+                        if (i == 0) {
+                            int[] result = Ebcdic.decodeSignOverpunch((byte) b);
+                            digits.append((char) ('0' + result[0]));
+                            negative = (result[1] == 1);
+                        } else {
+                            digits.append((char) ('0' + (b & 0x0F)));
+                        }
+                    }
+                }
+                default -> { // TRAILING (default)
+                    for (int i = 0; i < totalDigits; i++) {
+                        int b = data[offset + i] & 0xFF;
+                        if (i == totalDigits - 1) {
+                            int[] result = Ebcdic.decodeSignOverpunch((byte) b);
+                            digits.append((char) ('0' + result[0]));
+                            negative = (result[1] == 1);
+                        } else {
+                            digits.append((char) ('0' + (b & 0x0F)));
+                        }
+                    }
+                }
+            }
+        } else {
+            for (int i = 0; i < totalDigits; i++) {
+                int b = data[offset + i] & 0xFF;
+                digits.append((char) ('0' + (b & 0x0F)));
             }
         }
 
@@ -475,6 +716,10 @@ public final class Record {
         if (f.isGroup() || !f.isNumeric()
                 || (f.pic() != null && f.pic().category() == Pic.Category.NUMERIC_EDITED)) {
             // Alphanumeric or numeric-edited: raw bytes as characters
+            if (encoding != null) {
+                byte[] decoded = encoding.decode(data, offset, elementSize(f));
+                return new String(decoded);
+            }
             return new String(data, offset, elementSize(f));
         }
         // Numeric: return the display representation of the numeric value
@@ -710,7 +955,7 @@ public final class Record {
         if (f.isNumeric()) {
             encodeNumeric(f, f.offset(), BigDecimal.ZERO);
         } else {
-            Arrays.fill(data, f.offset(), f.offset() + f.size(), (byte) ' ');
+            Arrays.fill(data, f.offset(), f.offset() + f.size(), spaceByte());
         }
     }
 
@@ -731,6 +976,18 @@ public final class Record {
     /** All field names in this record. */
     public Set<String> fieldNames() {
         return Collections.unmodifiableSet(fieldsByName.keySet());
+    }
+
+    // ── encoding helpers ────────────────────────────────────────────
+
+    /** Returns the space byte for this record's encoding (0x40 for EBCDIC, 0x20 for ASCII). */
+    private byte spaceByte() {
+        return encoding != null ? (byte) 0x40 : (byte) ' ';
+    }
+
+    /** Returns the zero byte for alphanumeric fields (0xF0 for EBCDIC, 0x30 for ASCII). */
+    private byte zeroByte() {
+        return encoding != null ? (byte) 0xF0 : (byte) '0';
     }
 
     // ── internal helpers ────────────────────────────────────────────
@@ -766,9 +1023,22 @@ public final class Record {
         private final String recordName;
         private final List<FieldEntry> entries = new ArrayList<>();
         private FieldEntry lastEntry;
+        private Ebcdic encoding;  // null = ASCII (default)
 
         Builder(String recordName) {
             this.recordName = recordName;
+        }
+
+        /** Set this record to use EBCDIC encoding (CP037 by default). */
+        public Builder ebcdic() {
+            this.encoding = Ebcdic.defaultCodePage();
+            return this;
+        }
+
+        /** Set this record to use EBCDIC encoding with a specific code page. */
+        public Builder ebcdic(Ebcdic.CodePage codePage) {
+            this.encoding = Ebcdic.codePage(codePage);
+            return this;
         }
 
         /** Define an elementary field with a PIC clause. */
@@ -802,6 +1072,30 @@ public final class Record {
         /** Set the last field's usage to COMP-5 (native binary). */
         public Builder comp5() {
             requireLastEntry().usage = Usage.COMP5;
+            return this;
+        }
+
+        /** Set the last field's sign position to TRAILING (default). */
+        public Builder signTrailing() {
+            requireLastEntry().signPosition = SignPosition.TRAILING;
+            return this;
+        }
+
+        /** Set the last field's sign position to LEADING. */
+        public Builder signLeading() {
+            requireLastEntry().signPosition = SignPosition.LEADING;
+            return this;
+        }
+
+        /** Set the last field's sign position to TRAILING SEPARATE. */
+        public Builder signTrailingSeparate() {
+            requireLastEntry().signPosition = SignPosition.TRAILING_SEPARATE;
+            return this;
+        }
+
+        /** Set the last field's sign position to LEADING SEPARATE. */
+        public Builder signLeadingSeparate() {
+            requireLastEntry().signPosition = SignPosition.LEADING_SEPARATE;
             return this;
         }
 
@@ -896,10 +1190,11 @@ public final class Record {
             // Allocate buffer and create the record
             byte[] buffer = new byte[totalSize];
             Record record = new Record(recordName, totalSize, fieldMap, condMap,
-                                       topLevel, buffer);
+                                       topLevel, buffer, encoding);
 
             // Initialize with spaces (COBOL default for alphanumeric)
-            Arrays.fill(buffer, (byte) ' ');
+            // Use EBCDIC space (0x40) or ASCII space (0x20) depending on encoding
+            Arrays.fill(buffer, encoding != null ? (byte) 0x40 : (byte) ' ');
 
             // Apply initial VALUES
             applyInitialValues(entries, record);
@@ -954,7 +1249,7 @@ public final class Record {
                     }
                 } else {
                     // Elementary item
-                    int fieldSize = e.pic.storageSize(e.usage);
+                    int fieldSize = e.pic.storageSize(e.usage, e.signPosition);
                     if (e.occurs > 0) {
                         offsets.put(e.name, offset);
                         sizes.put(e.name, fieldSize * e.occurs);
@@ -977,7 +1272,7 @@ public final class Record {
                 }
                 return total * Math.max(1, e.occurs);
             } else {
-                int base = e.pic.storageSize(e.usage);
+                int base = e.pic.storageSize(e.usage, e.signPosition);
                 return base * Math.max(1, e.occurs);
             }
         }
@@ -988,24 +1283,61 @@ public final class Record {
                                      List<FieldDef> siblings,
                                      Map<String, Integer> offsets,
                                      Map<String, Integer> sizes) {
+            buildFieldDefs(entries, level, fieldMap, condMap, siblings,
+                           offsets, sizes, 0, 0);
+        }
+
+        private void buildFieldDefs(List<FieldEntry> entries, int level,
+                                     Map<String, FieldDef> fieldMap,
+                                     Map<String, Condition> condMap,
+                                     List<FieldDef> siblings,
+                                     Map<String, Integer> offsets,
+                                     Map<String, Integer> sizes,
+                                     int parentOccurs, int parentStride) {
             for (FieldEntry e : entries) {
                 List<FieldDef> children = new ArrayList<>();
-                if (e.children != null) {
-                    buildFieldDefs(e.children, level + 1, fieldMap, condMap,
-                                   children, offsets, sizes);
-                }
 
                 int stride = 0;
-                if (e.occurs > 0) {
-                    stride = sizes.get(e.name) / e.occurs;
+                int occurs = e.occurs;
+                if (occurs > 0) {
+                    stride = sizes.get(e.name) / occurs;
+                }
+
+                // Determine the effective occurs/stride for children of this entry
+                int childParentOccurs = 0;
+                int childParentStride = 0;
+                if (e.children != null && occurs > 0) {
+                    // This group has OCCURS — propagate to children
+                    childParentOccurs = occurs;
+                    childParentStride = stride;
+                } else if (parentOccurs > 0) {
+                    // This entry is inside a parent group with OCCURS — propagate down
+                    childParentOccurs = parentOccurs;
+                    childParentStride = parentStride;
+                }
+
+                if (e.children != null) {
+                    buildFieldDefs(e.children, level + 1, fieldMap, condMap,
+                                   children, offsets, sizes,
+                                   childParentOccurs, childParentStride);
+                }
+
+                // If this is a child field inside a group with OCCURS,
+                // and it doesn't have its own OCCURS, inherit from parent
+                int effectiveOccurs = occurs;
+                int effectiveStride = stride;
+                if (effectiveOccurs == 0 && parentOccurs > 0) {
+                    effectiveOccurs = parentOccurs;
+                    effectiveStride = parentStride;
                 }
 
                 FieldDef fd = new FieldDef(
                     e.name, level, e.pic, e.usage,
                     offsets.get(e.name), sizes.get(e.name),
                     e.children != null, e.redefines,
-                    e.occurs, stride,
-                    children, e.conditions
+                    effectiveOccurs, effectiveStride,
+                    children, e.conditions,
+                    e.signPosition
                 );
 
                 fieldMap.put(e.name, fd);
@@ -1042,6 +1374,7 @@ public final class Record {
             final String name;
             final Pic pic;            // null for groups
             Usage usage;
+            SignPosition signPosition;
             final List<FieldEntry> children; // null for elementary
             final Map<String, Condition> conditions = new LinkedHashMap<>();
             String redefines;
@@ -1054,6 +1387,7 @@ public final class Record {
                 this.name = name;
                 this.pic = pic;
                 this.usage = usage;
+                this.signPosition = SignPosition.TRAILING;
                 this.children = null;
             }
 
@@ -1062,6 +1396,7 @@ public final class Record {
                 this.name = name;
                 this.pic = null;
                 this.usage = Usage.DISPLAY;
+                this.signPosition = SignPosition.TRAILING;
                 this.children = new ArrayList<>(children);
             }
         }

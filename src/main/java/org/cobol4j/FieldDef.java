@@ -42,6 +42,7 @@ public final class FieldDef {
     private final String redefines; // name of redefined field, or null
     private final int occurs;       // 0 = not an array; >0 = OCCURS count
     private final int stride;       // byte size of one occurrence (for OCCURS)
+    private final SignPosition signPosition; // SIGN clause for DISPLAY numeric fields
 
     private final List<FieldDef> children;
     private final Map<String, Condition> conditions;
@@ -50,6 +51,15 @@ public final class FieldDef {
              int offset, int size, boolean group, String redefines,
              int occurs, int stride,
              List<FieldDef> children, Map<String, Condition> conditions) {
+        this(name, level, pic, usage, offset, size, group, redefines,
+             occurs, stride, children, conditions, SignPosition.TRAILING);
+    }
+
+    FieldDef(String name, int level, Pic pic, Usage usage,
+             int offset, int size, boolean group, String redefines,
+             int occurs, int stride,
+             List<FieldDef> children, Map<String, Condition> conditions,
+             SignPosition signPosition) {
         this.name = name;
         this.level = level;
         this.pic = pic;
@@ -60,6 +70,7 @@ public final class FieldDef {
         this.redefines = redefines;
         this.occurs = occurs;
         this.stride = stride;
+        this.signPosition = signPosition;
         this.children = List.copyOf(children);
         this.conditions = Map.copyOf(conditions);
     }
@@ -78,6 +89,7 @@ public final class FieldDef {
     public int occurs()                      { return occurs; }
     public int stride()                      { return stride; }
     public boolean isArray()                 { return occurs > 0; }
+    public SignPosition signPosition()        { return signPosition; }
     public List<FieldDef> children()         { return children; }
     public Map<String, Condition> conditions(){ return conditions; }
 

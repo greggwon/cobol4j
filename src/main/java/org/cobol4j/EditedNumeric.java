@@ -40,13 +40,25 @@ final class EditedNumeric {
     private EditedNumeric() {}
 
     /**
-     * Format a value according to a numeric-edited PIC.
+     * Format a value according to a numeric-edited PIC using default (US) config.
      *
      * @param value the numeric value to format
      * @param pic   the PIC clause (must be NUMERIC_EDITED)
      * @return the formatted display string, padded to pic.displaySize()
      */
     static String format(BigDecimal value, Pic pic) {
+        return format(value, pic, CobolConfig.defaults());
+    }
+
+    /**
+     * Format a value according to a numeric-edited PIC using the given config.
+     *
+     * @param value  the numeric value to format
+     * @param pic    the PIC clause (must be NUMERIC_EDITED)
+     * @param config the COBOL config (SPECIAL-NAMES settings)
+     * @return the formatted display string, padded to pic.displaySize()
+     */
+    static String format(BigDecimal value, Pic pic, CobolConfig config) {
         String expanded = pic.expanded();
         boolean negative = value.signum() < 0;
         BigDecimal absValue = value.abs();
@@ -136,7 +148,7 @@ final class EditedNumeric {
                         if (!pastSuppression && digitIdx < firstSignificant) {
                             // Is this the position just before the first significant digit?
                             if (digitIdx == firstSignificant - 1 || i == floatCount - 1) {
-                                result[outIdx++] = '$';
+                                result[outIdx++] = config.currencySign();
                                 pastSuppression = true;
                             } else {
                                 result[outIdx++] = ' ';
@@ -148,7 +160,7 @@ final class EditedNumeric {
                         digitIdx++;
                     } else {
                         // Fixed $
-                        result[outIdx++] = '$';
+                        result[outIdx++] = config.currencySign();
                     }
                 }
                 case '+' -> {
@@ -197,14 +209,14 @@ final class EditedNumeric {
                     // Implied decimal — no output character
                 }
                 case '.' -> {
-                    result[outIdx++] = '.';
+                    result[outIdx++] = config.decimalChar();
                     pastSuppression = true; // decimals always show
                 }
                 case ',' -> {
                     if (!pastSuppression) {
                         result[outIdx++] = ' '; // suppress comma in suppressed zone
                     } else {
-                        result[outIdx++] = ',';
+                        result[outIdx++] = config.thousandsSeparator();
                     }
                 }
                 case '/' -> result[outIdx++] = '/';

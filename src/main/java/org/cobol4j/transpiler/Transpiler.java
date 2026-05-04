@@ -18,6 +18,11 @@
  */
 package org.cobol4j.transpiler;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * Top-level entry point: COBOL source to Java source using cobol4j API.
  * <p>
@@ -39,7 +44,26 @@ package org.cobol4j.transpiler;
  */
 public final class Transpiler {
 
+    private static volatile List<Path> defaultCopybookPaths = List.of();
+
     private Transpiler() {}
+
+    /**
+     * Set the default copybook search paths used by all transpile methods.
+     * Paths are searched in order when resolving COPY statements.
+     *
+     * @param paths directories to search for copybook files
+     */
+    public static void setCopybookPaths(List<Path> paths) {
+        defaultCopybookPaths = List.copyOf(paths);
+    }
+
+    /**
+     * Get the currently configured default copybook search paths.
+     */
+    public static List<Path> getCopybookPaths() {
+        return defaultCopybookPaths;
+    }
 
     /**
      * Transpile COBOL source to Java source.
@@ -88,7 +112,8 @@ public final class Transpiler {
     }
 
     private static String doTranspile(String cobolSource, TranspileDiagnostics diag) {
-        CobolProgram program = Parser.parse(cobolSource, diag);
+        String expanded = Preprocessor.process(cobolSource, defaultCopybookPaths, diag);
+        CobolProgram program = Parser.parse(expanded, diag);
         return JavaEmitter.emit(program, diag);
     }
 

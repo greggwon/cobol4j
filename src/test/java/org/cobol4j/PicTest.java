@@ -101,4 +101,19 @@ class PicTest {
         assertEquals(Pic.Category.NUMERIC_EDITED, pic.category());
         assertEquals(9, pic.displaySize()); // ZZZZZ9.99 = 9 chars
     }
+
+    @Test
+    void picEditedWithActualDecimalPoint() {
+        Pic pic = Pic.parse("Z(5)9.99");
+        assertEquals(6, pic.integerDigits());  // ZZZZZ9
+        assertEquals(2, pic.decimalDigits());  // 99
+        assertEquals(9, pic.displaySize());    // 6 + 1(dot) + 2
+    }
+
+    @Test
+    void picEditedDollarSign() {
+        Pic pic = Pic.parse("$$$,$$9.99");
+        assertTrue(pic.integerDigits() > 0);
+        assertEquals(2, pic.decimalDigits());
+    }
 }

@@ -233,7 +233,7 @@ class TranspilerTest {
             PROCEDURE DIVISION.
             MAIN-PARA.
                 MOVE 85 TO WS-SCORE.
-                IF WS-SCORE = 90
+                IF WS-SCORE GREATER THAN OR EQUAL TO 90
                     MOVE "A" TO WS-GRADE
                 ELSE
                     MOVE "B" TO WS-GRADE

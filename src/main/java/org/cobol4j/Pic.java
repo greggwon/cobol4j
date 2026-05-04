@@ -115,7 +115,12 @@ public final class Pic {
                     if (afterDecimal) decDigits++; else intDigits++;
                     dSize++;
                 }
-                case '.', ',', '/', 'B', '0' -> {
+                case '.' -> {
+                    hasEditChars = true;
+                    afterDecimal = true;  // marks the decimal position
+                    dSize++; // insertion character occupies storage
+                }
+                case ',', '/', 'B', '0' -> {
                     hasEditChars = true;
                     dSize++; // insertion characters occupy storage
                 }
@@ -200,8 +205,21 @@ public final class Pic {
      * Calculate byte-storage size for a given {@link Usage}.
      */
     public int storageSize(Usage usage) {
+        return storageSize(usage, SignPosition.TRAILING);
+    }
+
+    /**
+     * Calculate byte-storage size for a given {@link Usage} and {@link SignPosition}.
+     * SEPARATE sign positions add 1 byte for the sign character.
+     */
+    public int storageSize(Usage usage, SignPosition signPosition) {
         if (!isNumeric() || usage == Usage.DISPLAY) {
-            return displaySize;
+            int base = displaySize;
+            if (signed && signPosition != null && signPosition.isSeparate()
+                    && usage == Usage.DISPLAY && isNumeric()) {
+                base += 1; // separate sign character
+            }
+            return base;
         }
         int digits = totalDigits();
         return switch (usage) {
