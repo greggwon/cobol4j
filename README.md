@@ -10,6 +10,13 @@ calls against a runtime that already understands COBOL semantics.** The transpil
 becomes a thin syntax-directed translator. All the hard behavioral correctness lives
 in one testable, versioned library.
 
+# Building and Using cobol4j
+
+This software is built using maven.  There is a Makefile in the top level directory 
+that will build the java source files, run tests and package everything into a fat
+jar a thin jar and install to ~/.md.  Have a look at the Makefile for the details
+of each of the targets.
+
 ## Why No BigDecimal, No float, No double
 
 COBOL has **no floating point**. All COBOL arithmetic is fixed-point decimal — every
