@@ -164,6 +164,11 @@ public final class Decimal implements Comparable<Decimal> {
         return wrap(value.abs());
     }
 
+    /** Exponentiation (integer exponent). COBOL's ** operator. */
+    public Decimal pow(int exponent) {
+        return wrap(value.pow(exponent));
+    }
+
     /** Set scale (decimal places) with specified rounding. */
     public Decimal setScale(int scale, RoundingMode rounding) {
         return wrap(value.setScale(scale, rounding));

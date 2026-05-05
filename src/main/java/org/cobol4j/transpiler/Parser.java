@@ -588,31 +588,105 @@ public final class Parser {
         return new Statement.If(cond, thenBlock, elseBlock);
     }
 
+    /**
+     * Parse EVALUATE statement.
+     * Grammar:
+     *   evaluate-stmt  := EVALUATE subject when-group+ END-EVALUATE
+     *   subject        := TRUE | identifier | literal
+     *   when-group     := WHEN (OTHER | when-value) statement*
+     *   when-value     := literal | identifier (condition name or field value)
+     */
     private Statement parseEvaluate() {
         advance(); // consume EVALUATE
-        String subject = current().value(); advance();
+
+        // Parse subject: TRUE, a field name, or a literal
+        String subject = parseEvaluateSubject();
+
         List<Statement.WhenClause> whens = new ArrayList<>();
         List<Statement> whenOther = new ArrayList<>();
 
-        while (matchWord("WHEN")) {
-            if (matchWord("OTHER")) {
-                while (!atEnd() && !peek("END-EVALUATE")) {
-                    Statement s = parseStatement();
-                    if (s != null) whenOther.add(s);
-                }
-                break;
+        // Parse WHEN clauses until END-EVALUATE or period
+        while (!atEnd() && !atPeriod() && peek("WHEN")) {
+            advance(); // consume WHEN
+
+            // Check for WHEN OTHER (default case)
+            if (peek("OTHER")) {
+                advance(); // consume OTHER
+                whenOther = parseWhenBody();
+                break; // OTHER is always last
             }
-            String value = parseValueLiteral();
-            List<Statement> body = new ArrayList<>();
-            while (!atEnd() && !peek("WHEN") && !peek("END-EVALUATE")) {
-                Statement s = parseStatement();
-                if (s != null) body.add(s);
-            }
-            whens.add(new Statement.WhenClause(value, body));
+
+            // Parse the WHEN value — what we're matching against
+            String whenValue = parseWhenValue();
+
+            // Parse the WHEN body — statements until next WHEN or END-EVALUATE
+            List<Statement> body = parseWhenBody();
+
+            whens.add(new Statement.WhenClause(whenValue, body));
         }
+
         matchWord("END-EVALUATE");
         consumeStatementEnd();
         return new Statement.Evaluate(subject, whens, whenOther);
+    }
+
+    private String parseEvaluateSubject() {
+        Token t = current();
+        if (t.is("TRUE")) {
+            advance();
+            return "TRUE";
+        }
+        if (t.type() == Token.Type.STRING) {
+            String val = "\"" + t.value() + "\"";
+            advance();
+            return val;
+        }
+        if (t.type() == Token.Type.NUMBER) {
+            String val = t.value();
+            advance();
+            return val;
+        }
+        // Identifier (field name)
+        String name = t.value();
+        advance();
+        return name;
+    }
+
+    private String parseWhenValue() {
+        Token t = current();
+        if (t.type() == Token.Type.STRING) {
+            String val = "\"" + t.value() + "\"";
+            advance();
+            return val;
+        }
+        if (t.type() == Token.Type.NUMBER) {
+            String val = t.value();
+            advance();
+            return val;
+        }
+        // Identifier — could be condition name, field name, or figurative constant
+        String name = t.value();
+        advance();
+        return name;
+    }
+
+    private List<Statement> parseWhenBody() {
+        List<Statement> body = new ArrayList<>();
+        while (!atEnd() && !atPeriod()
+               && !peek("WHEN")
+               && !peek("END-EVALUATE")) {
+            try {
+                Statement s = parseStatement();
+                if (s != null) body.add(s);
+            } catch (ParseException e) {
+                skipToSyncPoint();
+            } catch (RuntimeException e) {
+                diag.error("parser", current().line(), current().value(),
+                    "Error in EVALUATE WHEN body: " + e.getMessage());
+                skipToSyncPoint();
+            }
+        }
+        return body;
     }
 
     private Statement parsePerform() {
@@ -1156,73 +1230,170 @@ public final class Parser {
     }
 
     // ── Condition parsing ───────────────────────────────────────────
+    // Grammar:
+    //   condition      := or-condition
+    //   or-condition   := and-condition (OR and-condition)*
+    //   and-condition  := primary-condition (AND primary-condition)*
+    //   primary-condition := NOT primary-condition
+    //                      | identifier relop operand
+    //                      | condition-name (88-level test)
 
     private Statement.Condition parseCondition() {
-        boolean negated = matchWord("NOT");
-        String left = current().value(); advance();
+        return parseOrCondition();
+    }
 
-        // Simple condition-name test (88-level): just the name
-        if (atEnd() || atPeriod() || isVerb(current().value())
-            || isScopeTerminator(current().value())
-            || peek("AFTER")) {
-            return new Statement.Condition(left, "IS-TRUE", null, negated);
+    private Statement.Condition parseOrCondition() {
+        Statement.Condition left = parseAndCondition();
+        while (peek("OR") && !peekAhead("EQUAL") && !peekAhead("EQUAL")) {
+            // Distinguish "OR" as boolean connector from "GREATER THAN OR EQUAL TO"
+            // If OR is followed by EQUAL, it's part of >=, not a boolean OR
+            advance(); // consume OR
+            Statement.Condition right = parseAndCondition();
+            left = new Statement.Condition.Or(left, right);
+        }
+        return left;
+    }
+
+    private Statement.Condition parseAndCondition() {
+        Statement.Condition left = parsePrimaryCondition();
+        while (matchWord("AND")) {
+            Statement.Condition right = parsePrimaryCondition();
+            left = new Statement.Condition.And(left, right);
+        }
+        return left;
+    }
+
+    private Statement.Condition parsePrimaryCondition() {
+        // NOT — unary negation, recurses into parsePrimaryCondition
+        if (matchWord("NOT")) {
+            Statement.Condition inner = parsePrimaryCondition();
+            // Apply negation: for Simple/ConditionName, flip their negated flag.
+            // For compound (And/Or), wrap it — we need a negate helper.
+            return negateCondition(inner);
         }
 
-        String operator;
+        // Parenthesized sub-condition — recurse to top level
+        if (current().type() == Token.Type.LPAREN) {
+            advance(); // consume (
+            Statement.Condition inner = parseOrCondition();
+            if (current().type() == Token.Type.RPAREN) advance(); // consume )
+            return inner;
+        }
+
+        // Atom: either a condition-name or a relational comparison
+        String left = current().value();
+
+        // Standalone condition name (88-level): no operator follows
+        if (isConditionEnd(1)) {
+            advance();
+            return new Statement.Condition.ConditionName(left, false);
+        }
+
+        advance(); // consume left operand
+
+        // IS/ARE noise words, possibly followed by NOT or class condition
+        boolean negated = false;
         if (matchWord("IS") || matchWord("ARE")) {
-            negated = negated || matchWord("NOT");
+            negated = matchWord("NOT");
+            // Class conditions: IS NUMERIC, IS ALPHABETIC
+            if (peek("NUMERIC")) { advance(); return new Statement.Condition.Simple(left, "IS-NUMERIC", null, negated); }
+            if (peek("ALPHABETIC")) { advance(); return new Statement.Condition.Simple(left, "IS-ALPHABETIC", null, negated); }
+        } else if (matchWord("NOT")) {
+            negated = true;
         }
 
-        if (matchWord("EQUAL") || matchWord("=")) {
-            consumeIf("TO");
-            operator = "=";
-        } else if (matchWord("GREATER")) {
-            consumeIf("THAN");
-            // GREATER THAN OR EQUAL TO
-            if (matchWord("OR")) {
-                consumeIf("EQUAL");
-                consumeIf("TO");
-                operator = ">=";
-            } else {
-                operator = ">";
-            }
-        } else if (matchWord("LESS")) {
-            consumeIf("THAN");
-            // LESS THAN OR EQUAL TO
-            if (matchWord("OR")) {
-                consumeIf("EQUAL");
-                consumeIf("TO");
-                operator = "<=";
-            } else {
-                operator = "<";
-            }
-        } else if (matchWord(">=")) {
-            operator = ">=";
-        } else if (matchWord("<=")) {
-            operator = "<=";
-        } else if (matchWord(">")) {
-            operator = ">";
-        } else if (matchWord("<")) {
-            operator = "<";
-        } else if (current().type() == Token.Type.GREATER) {
-            advance();
-            // Check for >= (> followed by =)
-            if (current().type() == Token.Type.EQUALS) { advance(); operator = ">="; }
-            else operator = ">";
-        } else if (current().type() == Token.Type.LESS) {
-            advance();
-            // Check for <= (< followed by =)
-            if (current().type() == Token.Type.EQUALS) { advance(); operator = "<="; }
-            else operator = "<";
-        } else if (current().type() == Token.Type.EQUALS) {
-            operator = "="; advance();
-        } else {
-            // Default: assume it's a condition-name test
-            return new Statement.Condition(left, "IS-TRUE", null, negated);
+        // Parse the relational operator
+        String operator = parseRelationalOperator();
+        if (operator == null) {
+            // No operator found — it's a condition-name test
+            return new Statement.Condition.ConditionName(left, negated);
         }
 
         String right = readOperand();
-        return new Statement.Condition(left, operator, right, negated);
+        return new Statement.Condition.Simple(left, operator, right, negated);
+    }
+
+    private Statement.Condition negateCondition(Statement.Condition cond) {
+        // For leaf conditions, flip their negated flag.
+        // For compound conditions, wrap in Not.
+        if (cond instanceof Statement.Condition.Simple s) {
+            return new Statement.Condition.Simple(s.left(), s.operator(), s.right(), !s.negated());
+        }
+        if (cond instanceof Statement.Condition.ConditionName cn) {
+            return new Statement.Condition.ConditionName(cn.name(), !cn.negated());
+        }
+        // For And, Or, Not — wrap in Not
+        return new Statement.Condition.Not(cond);
+    }
+
+    /**
+     * Check if the token at current+offset signals the end of a simple condition
+     * (meaning the current token is a standalone condition name).
+     */
+    private boolean isConditionEnd(int lookAhead) {
+        int idx = pos + lookAhead;
+        if (idx >= tokens.size()) return true;
+        Token t = tokens.get(idx);
+        if (t.type() == Token.Type.PERIOD) return true;
+        if (t.type() == Token.Type.EOF) return true;
+        String v = t.value();
+        if (isVerb(v)) return true;
+        if (isScopeTerminator(v)) return true;
+        if (v.equals("AND") || v.equals("OR")) return true;
+        if (v.equals("AFTER")) return true;
+        return false;
+    }
+
+    /**
+     * Look ahead past current position to check if "OR" at pos+1 is followed
+     * by "EQUAL" (making it part of "GREATER THAN OR EQUAL TO").
+     */
+    private boolean peekAhead(String word) {
+        int idx = pos + 1;
+        return idx < tokens.size() && tokens.get(idx).is(word);
+    }
+
+    private String parseRelationalOperator() {
+        if (matchWord("EQUAL") || matchWord("=")) {
+            consumeIf("TO");
+            return "=";
+        } else if (matchWord("GREATER")) {
+            consumeIf("THAN");
+            if (matchWord("OR")) {
+                consumeIf("EQUAL");
+                consumeIf("TO");
+                return ">=";
+            }
+            return ">";
+        } else if (matchWord("LESS")) {
+            consumeIf("THAN");
+            if (matchWord("OR")) {
+                consumeIf("EQUAL");
+                consumeIf("TO");
+                return "<=";
+            }
+            return "<";
+        } else if (matchWord(">=")) {
+            return ">=";
+        } else if (matchWord("<=")) {
+            return "<=";
+        } else if (matchWord(">")) {
+            return ">";
+        } else if (matchWord("<")) {
+            return "<";
+        } else if (current().type() == Token.Type.GREATER) {
+            advance();
+            if (current().type() == Token.Type.EQUALS) { advance(); return ">="; }
+            return ">";
+        } else if (current().type() == Token.Type.LESS) {
+            advance();
+            if (current().type() == Token.Type.EQUALS) { advance(); return "<="; }
+            return "<";
+        } else if (current().type() == Token.Type.EQUALS) {
+            advance();
+            return "=";
+        }
+        return null; // no operator found
     }
 
     // ── ON SIZE ERROR parsing ───────────────────────────────────────
@@ -1370,7 +1541,7 @@ public final class Parser {
                  "END-ADD", "END-SUBTRACT", "END-MULTIPLY", "END-DIVIDE",
                  "END-COMPUTE", "END-CALL", "END-STRING", "END-UNSTRING",
                  "END-SEARCH", "END-EXEC",
-                 "WHEN", "NOT", "ON",
+                 "WHEN", "ON",
                  "AT", "INVALID", "INTO",
                  "THEN" -> true;
             default -> false;

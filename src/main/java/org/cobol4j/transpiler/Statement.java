@@ -129,6 +129,13 @@ public sealed interface Statement {
     record ExecSql(String sqlText) implements Statement {}
 
     // ── Condition (used within IF, PERFORM UNTIL, etc.) ─────────────
+    // Conditions form a tree: AND/OR combine sub-conditions.
 
-    record Condition(String left, String operator, String right, boolean negated) {}
+    sealed interface Condition {
+        record Simple(String left, String operator, String right, boolean negated) implements Condition {}
+        record And(Condition left, Condition right) implements Condition {}
+        record Or(Condition left, Condition right) implements Condition {}
+        record Not(Condition inner) implements Condition {}
+        record ConditionName(String name, boolean negated) implements Condition {}
+    }
 }

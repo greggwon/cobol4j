@@ -368,17 +368,19 @@ public final class JavaEmitter {
     private void emitEvaluate(Statement.Evaluate e) {
         String subject = e.subject().equalsIgnoreCase("TRUE") ? "" : e.subject();
         if (subject.isEmpty()) {
-            // EVALUATE TRUE — use evaluateTrue()
+            // EVALUATE TRUE — WHEN values are condition names or boolean expressions
             line("ctx.evaluateTrue()");
             for (Statement.WhenClause w : e.whenClauses()) {
-                line("    .whenTrue(() -> " + emitValueExpr(w.value()) + ", () -> {");
+                String condition = emitEvaluateTrueCondition(w.value());
+                line("    .whenTrue(() -> " + condition + ", () -> {");
                 indent += 2;
                 for (Statement s : w.body()) emitStatement(s);
                 indent -= 2;
                 line("    })");
             }
         } else {
-            line("ctx.evaluate(" + fieldGet(subject) + ")");
+            // EVALUATE field — compare getString().trim() against WHEN values
+            line("ctx.evaluate(" + recRef(subject) + ".getString(\"" + subject + "\").trim())");
             for (Statement.WhenClause w : e.whenClauses()) {
                 line("    .when(" + emitValueExpr(w.value()) + ", () -> {");
                 indent += 2;
@@ -748,44 +750,89 @@ public final class JavaEmitter {
 
     // ── Expression helpers ──────────────────────────────────────────
 
+    /**
+     * For EVALUATE TRUE, the WHEN value is a condition name or expression
+     * that should produce a boolean, not a value comparison.
+     */
+    private String emitEvaluateTrueCondition(String value) {
+        if (value == null) return "true";
+        // Strip quotes if parseValueLiteral wrapped it
+        String clean = value;
+        if (clean.startsWith("\"") && clean.endsWith("\"") && clean.length() > 2) {
+            clean = clean.substring(1, clean.length() - 1);
+        }
+        // If it's a COBOL identifier (could be an 88-level condition name), emit as is()
+        if (clean.matches("[A-Z][A-Z0-9-]*")) {
+            return findRecordFor(clean) + ".is(\"" + clean + "\")";
+        }
+        // If it's a numeric literal, just return it as a boolean expression
+        if (clean.matches("-?\\d+\\.?\\d*")) {
+            return clean + " != 0";
+        }
+        // Fallback: treat as an expression
+        return emitValueExpr(value) + " != null";
+    }
+
     private String emitCondition(Statement.Condition cond) {
         if (cond == null) return "true";
-        String prefix = cond.negated() ? "!" : "";
-        if ("IS-TRUE".equals(cond.operator())) {
-            return prefix + findRecordFor(cond.left()) + ".is(\"" + cond.left() + "\")";
-        }
-        String left = cond.left();
-        String right = cond.right();
 
-        // Special handling for figurative constants in comparisons
-        if (right != null && (right.equals("SPACES") || right.equals("SPACE"))) {
-            return prefix + recRef(left) + ".getString(\"" + left + "\").trim().isEmpty()";
+        if (cond instanceof Statement.Condition.Not not) {
+            return "!(" + emitCondition(not.inner()) + ")";
         }
-        if (right != null && (right.equals("ZEROS") || right.equals("ZEROES") || right.equals("ZERO"))) {
-            return prefix + recRef(left) + ".getDecimal(\"" + left + "\").isZero()";
+        if (cond instanceof Statement.Condition.And and) {
+            return "(" + emitCondition(and.left()) + " && " + emitCondition(and.right()) + ")";
         }
-        if (right != null && (right.equals("HIGH-VALUES") || right.equals("HIGH-VALUE"))) {
-            // All bytes are 0xFF
-            return prefix + "java.util.Arrays.equals(" + recRef(left)
-                + ".getBytes(\"" + left + "\"), new byte[]{(byte)0xFF})";
+        if (cond instanceof Statement.Condition.Or or) {
+            return "(" + emitCondition(or.left()) + " || " + emitCondition(or.right()) + ")";
         }
-        if (right != null && (right.equals("LOW-VALUES") || right.equals("LOW-VALUE"))) {
-            return prefix + "java.util.Arrays.equals(" + recRef(left)
-                + ".getBytes(\"" + left + "\"), new byte[" + recRef(left)
-                + ".fieldDef(\"" + left + "\").size()])";
+        if (cond instanceof Statement.Condition.ConditionName cn) {
+            String prefix = cn.negated() ? "!" : "";
+            return prefix + findRecordFor(cn.name()) + ".is(\"" + cn.name() + "\")";
+        }
+        if (cond instanceof Statement.Condition.Simple s) {
+            String prefix = s.negated() ? "!" : "";
+            String left = s.left();
+            String right = s.right();
+
+            // Class conditions
+            if ("IS-NUMERIC".equals(s.operator())) {
+                return prefix + recRef(left) + ".getString(\"" + left + "\").trim().matches(\"[0-9.+-]*\")";
+            }
+            if ("IS-ALPHABETIC".equals(s.operator())) {
+                return prefix + recRef(left) + ".getString(\"" + left + "\").trim().matches(\"[A-Za-z ]*\")";
+            }
+
+            // Figurative constants in comparisons
+            if (right != null && (right.equals("SPACES") || right.equals("SPACE"))) {
+                return prefix + recRef(left) + ".getString(\"" + left + "\").trim().isEmpty()";
+            }
+            if (right != null && (right.equals("ZEROS") || right.equals("ZEROES") || right.equals("ZERO"))) {
+                return prefix + recRef(left) + ".getDecimal(\"" + left + "\").isZero()";
+            }
+            if (right != null && (right.equals("HIGH-VALUES") || right.equals("HIGH-VALUE"))) {
+                return prefix + "java.util.Arrays.equals(" + recRef(left)
+                    + ".getBytes(\"" + left + "\"), new byte[]{(byte)0xFF})";
+            }
+            if (right != null && (right.equals("LOW-VALUES") || right.equals("LOW-VALUE"))) {
+                return prefix + "java.util.Arrays.equals(" + recRef(left)
+                    + ".getBytes(\"" + left + "\"), new byte[" + recRef(left)
+                    + ".fieldDef(\"" + left + "\").size()])";
+            }
+
+            String leftExpr = fieldGet(left);
+            String rightExpr = emitValueExpr(right);
+            String op = switch (s.operator()) {
+                case "="  -> ".equalTo(" + rightExpr + ")";
+                case ">"  -> ".greaterThan(" + rightExpr + ")";
+                case "<"  -> ".lessThan(" + rightExpr + ")";
+                case ">=" -> ".greaterOrEqual(" + rightExpr + ")";
+                case "<=" -> ".lessOrEqual(" + rightExpr + ")";
+                default   -> ".equalTo(" + rightExpr + ")";
+            };
+            return prefix + leftExpr + op;
         }
 
-        String leftExpr = fieldGet(left);
-        String rightExpr = emitValueExpr(right);
-        String op = switch (cond.operator()) {
-            case "="  -> ".equalTo(" + rightExpr + ")";
-            case ">"  -> ".greaterThan(" + rightExpr + ")";
-            case "<"  -> ".lessThan(" + rightExpr + ")";
-            case ">=" -> ".greaterOrEqual(" + rightExpr + ")";
-            case "<=" -> ".lessOrEqual(" + rightExpr + ")";
-            default   -> ".equalTo(" + rightExpr + ")";
-        };
-        return prefix + leftExpr + op;
+        return "true"; // fallback
     }
 
     private String emitValueExpr(String val) {
@@ -828,7 +875,7 @@ public final class JavaEmitter {
     }
 
     // Recursive descent expression parser for COMPUTE
-    // Precedence: + - (low) then * / (high)
+    // Precedence (low to high): + - , * / , ** , unary -
     private String parseExprTokens(String[] tokens, int[] pos) {
         String left = parseExprTerm(tokens, pos);
         while (pos[0] < tokens.length) {
@@ -845,16 +892,25 @@ public final class JavaEmitter {
     }
 
     private String parseExprTerm(String[] tokens, int[] pos) {
-        String left = parseExprFactor(tokens, pos);
+        String left = parseExprPower(tokens, pos);
         while (pos[0] < tokens.length) {
             String op = tokens[pos[0]];
-            if (op.equals("*") || op.equals("/")) {
+            if (op.equals("/")) {
                 pos[0]++;
-                String right = parseExprFactor(tokens, pos);
-                if (op.equals("*")) {
-                    left = left + ".multiply(" + right + ")";
+                String right = parseExprPower(tokens, pos);
+                left = left + ".divide(" + right + ", 10)";
+            } else if (op.equals("*")) {
+                // Check for ** (exponentiation)
+                if (pos[0] + 1 < tokens.length && tokens[pos[0] + 1].equals("*")) {
+                    // It's ** — but only if tokenized as two separate *
+                    // This shouldn't happen with proper tokenization; handle just in case
+                    pos[0] += 2;
+                    String right = parseExprFactor(tokens, pos);
+                    left = left + ".pow(" + right + ".toInt())";
                 } else {
-                    left = left + ".divide(" + right + ", 10)";
+                    pos[0]++;
+                    String right = parseExprPower(tokens, pos);
+                    left = left + ".multiply(" + right + ")";
                 }
             } else {
                 break;
@@ -863,9 +919,27 @@ public final class JavaEmitter {
         return left;
     }
 
+    // Exponentiation: higher precedence than * /
+    private String parseExprPower(String[] tokens, int[] pos) {
+        String left = parseExprFactor(tokens, pos);
+        while (pos[0] < tokens.length && tokens[pos[0]].equals("**")) {
+            pos[0]++;
+            String right = parseExprFactor(tokens, pos);
+            left = left + ".pow(" + right + ".toInt())";
+        }
+        return left;
+    }
+
     private String parseExprFactor(String[] tokens, int[] pos) {
         if (pos[0] >= tokens.length) return "Decimal.ZERO";
         String tok = tokens[pos[0]];
+
+        // Unary minus
+        if (tok.equals("-")) {
+            pos[0]++;
+            String operand = parseExprFactor(tokens, pos);
+            return operand + ".negate()";
+        }
 
         // Parenthesized sub-expression
         if (tok.equals("(")) {
@@ -877,7 +951,7 @@ public final class JavaEmitter {
 
         pos[0]++;
 
-        // Numeric literal
+        // Numeric literal (including negative like -1 if tokenized together)
         if (tok.matches("-?\\d+\\.?\\d*")) {
             return "Decimal.of(\"" + tok + "\")";
         }
