@@ -555,9 +555,12 @@ public final class Parser {
         boolean rounded = false;
         if (matchWord("ROUNDED")) rounded = true;
         expect("=");
-        // Collect expression tokens until period or ON SIZE ERROR
+        // Collect expression tokens until period, verb, scope terminator, or ON SIZE ERROR
         StringBuilder expr = new StringBuilder();
-        while (!atEnd() && !atPeriod() && !peek("ON") && !peek("NOT")) {
+        while (!atEnd() && !atPeriod()
+               && !peek("ON") && !peek("NOT")
+               && !isVerb(current().value())
+               && !isScopeTerminator(current().value())) {
             expr.append(current().value()).append(" ");
             advance();
         }

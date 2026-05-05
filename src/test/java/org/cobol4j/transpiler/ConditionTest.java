@@ -83,8 +83,14 @@ class ConditionTest {
                 STOP RUN.
             """);
 
-        int orCount = countOccurrences(java, "||");
-        assertEquals(2, orCount, "Should have 2 OR connectors: " + extract(java));
+        // Count || only in lines that are actual IF conditions, not infrastructure
+        int orCount = 0;
+        for (String line : java.split("\n")) {
+            if (line.trim().startsWith("if (")) {
+                orCount += countOccurrences(line, "||");
+            }
+        }
+        assertEquals(2, orCount, "Should have 2 OR connectors in IF condition: " + extract(java));
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -192,9 +198,11 @@ class ConditionTest {
     private String extract(String java) {
         StringBuilder relevant = new StringBuilder();
         for (String line : java.split("\n")) {
-            if (line.contains("if (") || line.contains("&&") || line.contains("||")
-                || line.contains("performUntil")) {
-                relevant.append(line.trim()).append("\n");
+            String trimmed = line.trim();
+            // Only capture condition-related lines inside paragraph bodies
+            if ((trimmed.startsWith("if (") || trimmed.contains("performUntil"))
+                && !trimmed.contains("LOGGER_NAME")) {
+                relevant.append(trimmed).append("\n");
             }
         }
         return relevant.length() > 0 ? relevant.toString() : java.substring(Math.max(0, java.length() - 300));

@@ -88,6 +88,15 @@ public final class JavaEmitter {
         line("public class " + className + " {");
         indent++;
         line("");
+        line("private static final String LOGGER_NAME;");
+        line("static {");
+        indent++;
+        line("String env = System.getProperty(\"cobol4j.logger\",");
+        line("    System.getenv().getOrDefault(\"COBOL4J_LOGGER\", \"cobol4j\"));");
+        line("LOGGER_NAME = (env == null || env.isEmpty()) ? \"cobol4j\" : env;");
+        indent--;
+        line("}");
+        line("private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(LOGGER_NAME);");
         line("private final SystemCall sys = SystemCall.defaultInstance();");
         line("");
     }
@@ -219,7 +228,7 @@ public final class JavaEmitter {
             line(".workingStorage(" + toJavaFieldName(g.name) + ")");
         }
 
-        line(".onDisplay(s -> {})  // configure as needed");
+        line(".onDisplay(LOG::info)");
 
         for (CobolProgram.Paragraph para : program.paragraphs()) {
             emitParagraph(para);
