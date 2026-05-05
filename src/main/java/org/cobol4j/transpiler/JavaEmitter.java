@@ -518,11 +518,203 @@ public final class JavaEmitter {
     }
 
     private void emitExecSql(Statement.ExecSql s) {
-        diag.warning("emitter", 0, "EXEC SQL",
-            "Embedded SQL requires manual translation to CobolSql/SqlSession API. "
-            + "SQL text: " + s.sqlText());
-        line("// EXEC SQL: " + s.sqlText());
-        line("// TODO: Translate to CobolSql/SqlSession API");
+        String sql = s.sqlText().trim();
+        String upper = sql.toUpperCase();
+
+        // Transaction control — simple, no host variables
+        if (upper.equals("COMMIT")) {
+            line("sql.commit();");
+            return;
+        }
+        if (upper.equals("ROLLBACK")) {
+            line("sql.rollback();");
+            return;
+        }
+
+        // Detect statement type
+        if (upper.startsWith("SELECT")) {
+            emitExecSqlSelect(sql);
+        } else if (upper.startsWith("INSERT") || upper.startsWith("UPDATE")
+                || upper.startsWith("DELETE")) {
+            emitExecSqlDml(sql);
+        } else if (upper.startsWith("DECLARE") && upper.contains("CURSOR")) {
+            emitExecSqlDeclareCursor(sql);
+        } else if (upper.startsWith("OPEN")) {
+            emitExecSqlOpenCursor(sql);
+        } else if (upper.startsWith("FETCH")) {
+            emitExecSqlFetch(sql);
+        } else if (upper.startsWith("CLOSE")) {
+            emitExecSqlCloseCursor(sql);
+        } else {
+            // Unknown SQL — emit as comment with warning
+            diag.warning("emitter", 0, "EXEC SQL",
+                "Unrecognized SQL statement type: " + sql);
+            line("// EXEC SQL: " + sql);
+        }
+    }
+
+    /** SELECT ... INTO :host-vars ... WHERE :host-vars */
+    private void emitExecSqlSelect(String sql) {
+        // Extract INTO clause: everything between INTO and FROM
+        String upper = sql.toUpperCase();
+        int intoStart = upper.indexOf(" INTO ");
+        int fromStart = upper.indexOf(" FROM ");
+
+        List<String> intoVars = new ArrayList<>();
+        String cleanSql;
+
+        if (intoStart >= 0 && fromStart > intoStart) {
+            // Extract host variables from INTO clause
+            String intoClause = sql.substring(intoStart + 6, fromStart).trim();
+            for (String part : intoClause.split(",")) {
+                String var = part.trim();
+                if (var.startsWith(":")) {
+                    intoVars.add(var.substring(1).trim());
+                }
+            }
+            // Remove INTO clause from SQL
+            cleanSql = sql.substring(0, intoStart) + " " + sql.substring(fromStart);
+        } else {
+            cleanSql = sql;
+        }
+
+        // Find and replace remaining :HOST-VARs (input params)
+        List<String> inputVars = new ArrayList<>();
+        cleanSql = extractAndReplaceHostVars(cleanSql, inputVars);
+
+        // Emit the select call
+        line("sql.select(\"" + escapeJavaString(cleanSql.trim()) + "\")");
+        indent++;
+        for (String var : inputVars) {
+            String rec = recRef(var);
+            line(".param(" + rec + ", \"" + var + "\")");
+        }
+        if (!intoVars.isEmpty()) {
+            StringBuilder into = new StringBuilder(".into(" + recRef(intoVars.get(0)));
+            for (String var : intoVars) {
+                into.append(", \"").append(var).append("\"");
+            }
+            into.append(")");
+            line(into.toString());
+        }
+        line(".execute();");
+        indent--;
+    }
+
+    /** INSERT, UPDATE, DELETE with :host-vars */
+    private void emitExecSqlDml(String sql) {
+        List<String> inputVars = new ArrayList<>();
+        String cleanSql = extractAndReplaceHostVars(sql, inputVars);
+
+        line("sql.execute(\"" + escapeJavaString(cleanSql.trim()) + "\")");
+        indent++;
+        for (String var : inputVars) {
+            String rec = recRef(var);
+            line(".param(" + rec + ", \"" + var + "\")");
+        }
+        line(".execute();");
+        indent--;
+    }
+
+    /** DECLARE cursor-name CURSOR FOR SELECT ... */
+    private void emitExecSqlDeclareCursor(String sql) {
+        // Extract cursor name and the SELECT statement
+        // Find " CURSOR " as a standalone keyword (not part of a name like CUST-CURSOR)
+        String upper = sql.toUpperCase();
+        int declareEnd = upper.indexOf(" CURSOR ");
+        if (declareEnd < 0) declareEnd = upper.indexOf(" CURSOR");
+        String cursorName = sql.substring(8, declareEnd).trim(); // between "DECLARE " and " CURSOR"
+        int forIdx = upper.indexOf(" FOR ", declareEnd);
+        String selectSql = forIdx >= 0 ? sql.substring(forIdx + 5).trim() : "";
+
+        List<String> inputVars = new ArrayList<>();
+        selectSql = extractAndReplaceHostVars(selectSql, inputVars);
+
+        line("SqlCursor " + toJavaFieldName(cursorName) + " = sql.declareCursor(\""
+            + cursorName + "\", \"" + escapeJavaString(selectSql) + "\");");
+    }
+
+    /** OPEN cursor-name */
+    private void emitExecSqlOpenCursor(String sql) {
+        String cursorName = sql.substring(5).trim(); // after "OPEN "
+        line("sql.open(" + toJavaFieldName(cursorName) + ");");
+    }
+
+    /** FETCH cursor-name INTO :host-vars */
+    private void emitExecSqlFetch(String sql) {
+        String upper = sql.toUpperCase();
+        int intoIdx = upper.indexOf(" INTO ");
+        String cursorName;
+        List<String> intoVars = new ArrayList<>();
+
+        if (intoIdx >= 0) {
+            cursorName = sql.substring(6, intoIdx).trim(); // between FETCH and INTO
+            String intoClause = sql.substring(intoIdx + 6).trim();
+            for (String part : intoClause.split(",")) {
+                String var = part.trim();
+                if (var.startsWith(":")) {
+                    intoVars.add(var.substring(1).trim());
+                }
+            }
+        } else {
+            cursorName = sql.substring(6).trim();
+        }
+
+        StringBuilder fetch = new StringBuilder("sql.fetch(" + toJavaFieldName(cursorName) + ")");
+        if (!intoVars.isEmpty()) {
+            fetch.append(".into(").append(recRef(intoVars.get(0)));
+            for (String var : intoVars) {
+                fetch.append(", \"").append(var).append("\"");
+            }
+            fetch.append(")");
+        }
+        fetch.append(".execute();");
+        line(fetch.toString());
+    }
+
+    /** CLOSE cursor-name */
+    private void emitExecSqlCloseCursor(String sql) {
+        String cursorName = sql.substring(6).trim(); // after "CLOSE "
+        line("sql.close(" + toJavaFieldName(cursorName) + ");");
+    }
+
+    /**
+     * Find all :HOST-VAR references in SQL, replace with ?, collect var names.
+     * Handles ": VAR" (space after colon) since token-joining inserts spaces.
+     */
+    private String extractAndReplaceHostVars(String sql, List<String> vars) {
+        StringBuilder result = new StringBuilder();
+        int i = 0;
+        while (i < sql.length()) {
+            if (sql.charAt(i) == ':') {
+                // Skip optional whitespace after colon
+                int start = i + 1;
+                while (start < sql.length() && sql.charAt(start) == ' ') start++;
+                if (start < sql.length() && Character.isLetter(sql.charAt(start))) {
+                    // Found a host variable
+                    int end = start;
+                    while (end < sql.length() && (Character.isLetterOrDigit(sql.charAt(end))
+                           || sql.charAt(end) == '-' || sql.charAt(end) == '_')) {
+                        end++;
+                    }
+                    String varName = sql.substring(start, end);
+                    vars.add(varName);
+                    result.append('?');
+                    i = end;
+                } else {
+                    result.append(sql.charAt(i));
+                    i++;
+                }
+            } else {
+                result.append(sql.charAt(i));
+                i++;
+            }
+        }
+        return result.toString();
+    }
+
+    private String escapeJavaString(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     // ── INSPECT ──────────────────────────────────────────────────
