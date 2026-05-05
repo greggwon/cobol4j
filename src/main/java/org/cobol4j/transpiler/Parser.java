@@ -592,13 +592,24 @@ public final class Parser {
                 break; // OTHER is always last
             }
 
-            // Parse the WHEN value — what we're matching against
-            String whenValue = parseWhenValue();
+            // Collect WHEN values — may be multiple (fall-through):
+            //   WHEN "A" WHEN "B" WHEN "C" → same body for all
+            //   WHEN 1 THRU 10 → range
+            List<Statement.WhenValue> values = new ArrayList<>();
+            values.add(parseOneWhenValue());
+
+            // Check for additional WHEN values (fall-through) with no body between them
+            while (!atEnd() && peek("WHEN")
+                   && !isWhenFollowedByBody()) {
+                advance(); // consume WHEN
+                if (peek("OTHER")) break; // don't consume OTHER here
+                values.add(parseOneWhenValue());
+            }
 
             // Parse the WHEN body — statements until next WHEN or END-EVALUATE
             List<Statement> body = parseWhenBody();
 
-            whens.add(new Statement.WhenClause(whenValue, body));
+            whens.add(new Statement.WhenClause(values, body));
         }
 
         matchWord("END-EVALUATE");
@@ -628,7 +639,17 @@ public final class Parser {
         return name;
     }
 
-    private String parseWhenValue() {
+    private Statement.WhenValue parseOneWhenValue() {
+        String value = parseWhenValueToken();
+        // Check for THRU / THROUGH (range)
+        if (matchWord("THRU") || matchWord("THROUGH")) {
+            String thruEnd = parseWhenValueToken();
+            return new Statement.WhenValue(value, thruEnd);
+        }
+        return new Statement.WhenValue(value);
+    }
+
+    private String parseWhenValueToken() {
         Token t = current();
         if (t.type() == Token.Type.STRING) {
             String val = "\"" + t.value() + "\"";
@@ -640,10 +661,35 @@ public final class Parser {
             advance();
             return val;
         }
-        // Identifier — could be condition name, field name, or figurative constant
         String name = t.value();
         advance();
         return name;
+    }
+
+    /**
+     * Peek ahead to determine if the next WHEN is a fall-through (another value)
+     * or starts a new clause with a body. If the token after WHEN's value is
+     * a verb or another WHEN, it's fall-through. If it's a statement, there's a body.
+     */
+    private boolean isWhenFollowedByBody() {
+        // Save position to peek ahead
+        int saved = pos;
+        if (!peek("WHEN")) return true;
+        advance(); // skip WHEN
+        if (peek("OTHER")) { pos = saved; return true; } // WHEN OTHER has a body
+        // Skip the value token(s)
+        if (current().type() == Token.Type.STRING || current().type() == Token.Type.NUMBER
+            || current().type() == Token.Type.WORD) {
+            advance(); // skip value
+            // Check for THRU
+            if (peek("THRU") || peek("THROUGH")) {
+                advance(); advance(); // skip THRU + end value
+            }
+        }
+        // If next is WHEN or END-EVALUATE → this WHEN has no body (fall-through)
+        boolean hasBody = !peek("WHEN") && !peek("END-EVALUATE") && !atPeriod();
+        pos = saved;
+        return hasBody;
     }
 
     private List<Statement> parseWhenBody() {
@@ -1698,7 +1744,7 @@ public final class Parser {
                  "END-COMPUTE", "END-CALL", "END-STRING", "END-UNSTRING",
                  "END-SEARCH", "END-EXEC",
                  "WHEN", "ON",
-                 "AT", "INVALID", "INTO",
+                 "AT", "INTO",
                  "THEN" -> true;
             default -> false;
         };

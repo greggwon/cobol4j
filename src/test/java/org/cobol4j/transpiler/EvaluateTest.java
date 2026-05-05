@@ -147,6 +147,73 @@ class EvaluateTest {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    //  WHEN THRU (range)
+    // ═══════════════════════════════════════════════════════════════
+
+    @Test
+    void evaluateWhenThruRange() {
+        String java = transpile("""
+                EVALUATE WS-STATUS
+                    WHEN "A" THRU "M"
+                        DISPLAY "FIRST HALF"
+                    WHEN "N" THRU "Z"
+                        DISPLAY "SECOND HALF"
+                END-EVALUATE.
+                STOP RUN.
+            """);
+
+        assertNotNull(java, "Should transpile");
+        assertTrue(java.contains("compareTo") || java.contains("FIRST HALF"),
+            "Should handle THRU range: " + java);
+        assertTrue(java.contains("SECOND HALF"), "Should have second clause: " + java);
+    }
+
+    @Test
+    void evaluateWhenNumericThru() {
+        String java = transpile("""
+                EVALUATE WS-SCORE
+                    WHEN 90 THRU 100
+                        DISPLAY "A"
+                    WHEN 80 THRU 89
+                        DISPLAY "B"
+                    WHEN OTHER
+                        DISPLAY "C"
+                END-EVALUATE.
+                STOP RUN.
+            """, """
+            01 WS-REC.
+               05 WS-SCORE PIC 9(3).
+            """);
+
+        assertNotNull(java, "Should transpile");
+        assertTrue(java.contains("compareTo"), "Should use range comparison: " + java);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  WHEN fall-through (multiple WHEN same body)
+    // ═══════════════════════════════════════════════════════════════
+
+    @Test
+    void evaluateWhenFallThrough() {
+        String java = transpile("""
+                EVALUATE WS-STATUS
+                    WHEN "A"
+                    WHEN "B"
+                    WHEN "C"
+                        DISPLAY "VALID"
+                    WHEN OTHER
+                        DISPLAY "NOT VALID"
+                END-EVALUATE.
+                STOP RUN.
+            """);
+
+        assertNotNull(java, "Should transpile");
+        // Should generate an OR check for all three values
+        assertTrue(java.contains("VALID"), "Should have VALID body: " + java);
+        assertTrue(java.contains("NOT VALID"), "Should have NOT VALID body: " + java);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     //  Helpers
     // ═══════════════════════════════════════════════════════════════
 

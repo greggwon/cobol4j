@@ -54,7 +54,13 @@ public sealed interface Statement {
     record If(Condition condition, List<Statement> thenBlock, List<Statement> elseBlock) implements Statement {}
 
     record Evaluate(String subject, List<WhenClause> whenClauses, List<Statement> whenOther) implements Statement {}
-    record WhenClause(String value, List<Statement> body) implements Statement {}
+    record WhenClause(List<WhenValue> values, List<Statement> body) implements Statement {}
+    /** A single WHEN match — value, range (THRU), or condition name. */
+    record WhenValue(String value, String thruEnd) implements Statement {
+        /** Single value. */
+        public WhenValue(String value) { this(value, null); }
+        public boolean isRange() { return thruEnd != null; }
+    }
 
     record Perform(String paragraph, String thru, PerformType type,
                    String varying, String from, String by,

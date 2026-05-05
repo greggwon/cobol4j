@@ -389,7 +389,7 @@ public final class JavaEmitter {
             // EVALUATE TRUE — WHEN values are condition names or boolean expressions
             line("ctx.evaluateTrue()");
             for (Statement.WhenClause w : e.whenClauses()) {
-                String condition = emitEvaluateTrueCondition(w.value());
+                String condition = emitEvaluateTrueConditions(w.values());
                 line("    .whenTrue(() -> " + condition + ", () -> {");
                 indent += 2;
                 for (Statement s : w.body()) emitStatement(s);
@@ -397,10 +397,11 @@ public final class JavaEmitter {
                 line("    })");
             }
         } else {
-            // EVALUATE field — compare getString().trim() against WHEN values
+            // EVALUATE field — compare against WHEN values
             line("ctx.evaluate(" + recRef(subject) + ".getString(\"" + subject + "\").trim())");
             for (Statement.WhenClause w : e.whenClauses()) {
-                line("    .when(" + emitValueExpr(w.value()) + ", () -> {");
+                String predicate = emitWhenPredicate(w.values());
+                line("    .when(" + predicate + ", () -> {");
                 indent += 2;
                 for (Statement s : w.body()) emitStatement(s);
                 indent -= 2;
@@ -415,6 +416,44 @@ public final class JavaEmitter {
             line("    })");
         }
         line("    .execute();");
+    }
+
+    /** Emit condition(s) for EVALUATE TRUE — OR-connected if multiple values. */
+    private String emitEvaluateTrueConditions(List<Statement.WhenValue> values) {
+        if (values.size() == 1) {
+            return emitEvaluateTrueCondition(values.get(0).value());
+        }
+        // Multiple values = OR
+        StringBuilder sb = new StringBuilder("(");
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) sb.append(" || ");
+            sb.append(emitEvaluateTrueCondition(values.get(i).value()));
+        }
+        sb.append(")");
+        return sb.toString();
+    }
+
+    /** Emit a WHEN predicate for EVALUATE field — handles single value, range, and fall-through. */
+    private String emitWhenPredicate(List<Statement.WhenValue> values) {
+        if (values.size() == 1 && !values.get(0).isRange()) {
+            // Simple single value
+            return emitValueExpr(values.get(0).value());
+        }
+        // Multiple values or ranges — use a Predicate lambda
+        StringBuilder sb = new StringBuilder("(java.util.function.Predicate<Object>) v -> (");
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) sb.append(" || ");
+            Statement.WhenValue wv = values.get(i);
+            if (wv.isRange()) {
+                // v >= from && v <= to (using string comparison)
+                sb.append("(((Comparable)v).compareTo(").append(emitValueExpr(wv.value())).append(") >= 0")
+                  .append(" && ((Comparable)v).compareTo(").append(emitValueExpr(wv.thruEnd())).append(") <= 0)");
+            } else {
+                sb.append("v.equals(").append(emitValueExpr(wv.value())).append(")");
+            }
+        }
+        sb.append(")");
+        return sb.toString();
     }
 
     private void emitInlinePerform(Statement.InlinePerform ip) {
