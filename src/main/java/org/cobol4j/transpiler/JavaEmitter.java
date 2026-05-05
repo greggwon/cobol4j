@@ -75,6 +75,7 @@ public final class JavaEmitter {
         line("import org.cobol4j.SizeErrorHandler;");
         line("import org.cobol4j.Field;");
         line("import org.cobol4j.Decimal;");
+        line("import org.cobol4j.Intrinsic;");
         line("import org.cobol4j.Inspect;");
         line("import org.cobol4j.CobolString;");
         line("import org.cobol4j.CobolUnstring;");
@@ -292,7 +293,7 @@ public final class JavaEmitter {
 
     private void emitMove(Statement.Move m) {
         for (String target : m.targets()) {
-            String val = emitValueExpr(m.source());
+            String val = emitExpr(m.source());
             line(recRef(target) + ".move(\"" + target + "\", " + val + ");");
         }
     }
@@ -302,47 +303,55 @@ public final class JavaEmitter {
     }
 
     private void emitAdd(Statement.Add a) {
-        String value = a.sources().size() == 1 ? emitValueExpr(a.sources().get(0))
-            : "Decimal.of(\"" + a.sources().get(0) + "\")";
+        String value = emitExpr(a.sources().get(0));
 
         if (a.giving() != null) {
-            line("Arithmetic.add(" + value + ", " + fieldGet(a.to()) + ")");
+            String firstTarget = a.targets().isEmpty() ? "0" : a.targets().get(0);
+            line("Arithmetic.add(" + value + ", " + fieldGet(firstTarget) + ")");
             line("    .giving(" + recRef(a.giving()) + ".field(\"" + a.giving() + "\"))");
             if (a.rounded()) line("    .rounded()");
             line("    .execute();");
         } else {
+            // ADD value TO target1 target2 target3 — each target gets the value added
             String handler = emitSizeErrorHandler(a.onSizeError(), a.notOnSizeError());
-            line(recRef(a.to()) + ".add(\"" + a.to() + "\", " + value
-                + (handler.isEmpty() ? "" : ", " + handler) + ");");
+            for (String target : a.targets()) {
+                line(recRef(target) + ".add(\"" + target + "\", " + value
+                    + (handler.isEmpty() ? "" : ", " + handler) + ");");
+            }
         }
     }
 
     private void emitSubtract(Statement.Subtract s) {
-        String value = emitValueExpr(s.subtrahends().get(0));
+        String value = emitExpr(s.subtrahends().get(0));
         if (s.giving() != null) {
-            line("Arithmetic.subtract(" + value + ", " + fieldGet(s.from()) + ")");
+            String firstTarget = s.targets().isEmpty() ? "0" : s.targets().get(0);
+            line("Arithmetic.subtract(" + value + ", " + fieldGet(firstTarget) + ")");
             line("    .giving(" + recRef(s.giving()) + ".field(\"" + s.giving() + "\"))");
             if (s.rounded()) line("    .rounded()");
             line("    .execute();");
         } else {
-            line(recRef(s.from()) + ".subtract(\"" + s.from() + "\", " + value + ");");
+            // SUBTRACT value FROM target1 target2 target3
+            for (String target : s.targets()) {
+                line(recRef(target) + ".subtract(\"" + target + "\", " + value + ");");
+            }
         }
     }
 
     private void emitMultiply(Statement.Multiply m) {
         if (m.giving() != null) {
-            line("Arithmetic.multiply(" + fieldGet(m.a()) + ", " + fieldGet(m.by()) + ")");
+            line("Arithmetic.multiply(" + emitExpr(m.a()) + ", " + emitExpr(m.by()) + ")");
             line("    .giving(" + recRef(m.giving()) + ".field(\"" + m.giving() + "\"))");
             if (m.rounded()) line("    .rounded()");
             line("    .execute();");
         } else {
-            line(recRef(m.by()) + ".multiply(\"" + m.by() + "\", " + fieldGet(m.a()) + ");");
+            String byName = (m.by() instanceof Expr.FieldRef fr) ? fr.name() : "RESULT";
+            line(recRef(byName) + ".multiply(\"" + byName + "\", " + emitExpr(m.a()) + ");");
         }
     }
 
     private void emitDivide(Statement.Divide d) {
         if (d.giving() != null) {
-            line("Arithmetic.divide(" + fieldGet(d.dividend()) + ", " + fieldGet(d.divisor()) + ")");
+            line("Arithmetic.divide(" + emitExpr(d.dividend()) + ", " + emitExpr(d.divisor()) + ")");
             line("    .giving(" + recRef(d.giving()) + ".field(\"" + d.giving() + "\"))");
             if (d.remainder() != null) {
                 line("    .remainder(" + recRef(d.remainder()) + ".field(\"" + d.remainder() + "\"))");
@@ -350,13 +359,13 @@ public final class JavaEmitter {
             if (d.rounded()) line("    .rounded()");
             line("    .execute();");
         } else {
-            line(recRef(d.dividend()) + ".divide(\"" + d.dividend() + "\", " + fieldGet(d.divisor()) + ");");
+            String dividendName = (d.dividend() instanceof Expr.FieldRef fr) ? fr.name() : "RESULT";
+            line(recRef(dividendName) + ".divide(\"" + dividendName + "\", " + emitExpr(d.divisor()) + ");");
         }
     }
 
     private void emitCompute(Statement.Compute c) {
-        // Convert COBOL arithmetic expression to Decimal expression
-        String expr = convertArithmeticExpr(c.expression());
+        String expr = emitExpr(c.expression());
         line(recRef(c.target()) + ".compute(\"" + c.target() + "\", " + expr + ");");
     }
 
@@ -439,12 +448,7 @@ public final class JavaEmitter {
         StringBuilder args = new StringBuilder();
         for (int i = 0; i < d.items().size(); i++) {
             if (i > 0) args.append(", ");
-            String item = d.items().get(i);
-            if (item.startsWith("\"")) {
-                args.append(item);
-            } else {
-                args.append(fieldGet(item));
-            }
+            args.append(emitExpr(d.items().get(i)));
         }
         line("ctx.display(" + args + ");");
     }
@@ -760,6 +764,88 @@ public final class JavaEmitter {
     // ── Expression helpers ──────────────────────────────────────────
 
     /**
+     * Walk an Expr tree and produce Java source code.
+     */
+    private String emitExpr(Expr expr) {
+        if (expr == null) return "null";
+        if (expr instanceof Expr.NumericLit n) return "Decimal.of(\"" + n.value() + "\")";
+        if (expr instanceof Expr.StringLit s) return "\"" + s.value() + "\"";
+        if (expr instanceof Expr.Figurative f) return switch (f.name()) {
+            case "SPACES" -> "\"\"";
+            case "ZEROS" -> "Decimal.ZERO";
+            case "HIGH-VALUES" -> "\"\\u00FF\"";
+            case "LOW-VALUES" -> "\"\\u0000\"";
+            default -> "\"\"";
+        };
+        if (expr instanceof Expr.FunctionCall fc) return emitFunctionCall(fc);
+        if (expr instanceof Expr.FieldRef fr) return emitFieldRef(fr);
+        if (expr instanceof Expr.BinaryOp op) return emitBinaryOp(op);
+        if (expr instanceof Expr.Negate neg) return emitExpr(neg.operand()) + ".negate()";
+        return "null";
+    }
+
+    private String emitFieldRef(Expr.FieldRef fr) {
+        if (fr.isRefMod()) {
+            return recRef(fr.name()) + ".substring(\"" + fr.name() + "\", "
+                + emitRefModArg(fr.refModPos()) + ", " + emitRefModArg(fr.refModLen()) + ")";
+        }
+        if (fr.isSubscripted()) {
+            return recRef(fr.name()) + ".getDecimal(\"" + fr.name() + "\", " + emitSubscript(fr.subscript()) + ")";
+        }
+        return recRef(fr.name()) + ".getDecimal(\"" + fr.name() + "\")";
+    }
+
+    /** Emit a reference modification argument as a raw integer. */
+    private String emitRefModArg(Expr expr) {
+        if (expr instanceof Expr.NumericLit n) return n.value();
+        if (expr instanceof Expr.FieldRef fr) return "(int) " + emitFieldRef(fr) + ".toLong()";
+        return "(int) " + emitExpr(expr) + ".toLong()";
+    }
+
+    /** Emit a subscript as an int expression (0-based for Java, but COBOL is 1-based). */
+    private String emitSubscript(Expr expr) {
+        if (expr instanceof Expr.NumericLit n) {
+            // COBOL subscripts are 1-based, Record uses 0-based
+            int val = Integer.parseInt(n.value()) - 1;
+            return String.valueOf(val);
+        }
+        if (expr instanceof Expr.FieldRef fr) {
+            // Field value as subscript — convert to 0-based
+            return "(int) " + recRef(fr.name()) + ".getLong(\"" + fr.name() + "\") - 1";
+        }
+        return "(int) " + emitExpr(expr) + ".toLong() - 1";
+    }
+
+    private String emitFunctionCall(Expr.FunctionCall fc) {
+        return switch (fc.name().toUpperCase()) {
+            case "CURRENT-DATE" -> "Intrinsic.currentDate()";
+            case "LENGTH" -> fc.args().isEmpty() ? "Intrinsic.length()"
+                : "Intrinsic.length(" + emitExpr(fc.args().get(0)) + ")";
+            case "UPPER-CASE" -> fc.args().isEmpty() ? "Intrinsic.upperCase(\"\")"
+                : "Intrinsic.upperCase(" + emitExpr(fc.args().get(0)) + ")";
+            case "LOWER-CASE" -> fc.args().isEmpty() ? "Intrinsic.lowerCase(\"\")"
+                : "Intrinsic.lowerCase(" + emitExpr(fc.args().get(0)) + ")";
+            case "TRIM" -> fc.args().isEmpty() ? "Intrinsic.trim(\"\")"
+                : "Intrinsic.trim(" + emitExpr(fc.args().get(0)) + ")";
+            default -> "Intrinsic." + fc.name().toLowerCase().replace("-", "") + "("
+                + String.join(", ", fc.args().stream().map(this::emitExpr).toList()) + ")";
+        };
+    }
+
+    private String emitBinaryOp(Expr.BinaryOp op) {
+        String left = emitExpr(op.left());
+        String right = emitExpr(op.right());
+        return switch (op.operator()) {
+            case "+" -> left + ".add(" + right + ")";
+            case "-" -> left + ".subtract(" + right + ")";
+            case "*" -> left + ".multiply(" + right + ")";
+            case "/" -> left + ".divide(" + right + ", 10)";
+            case "**" -> left + ".pow(" + right + ".toInt())";
+            default -> left;
+        };
+    }
+
+    /**
      * For EVALUATE TRUE, the WHEN value is a condition name or expression
      * that should produce a boolean, not a value comparison.
      */
@@ -800,36 +886,42 @@ public final class JavaEmitter {
         }
         if (cond instanceof Statement.Condition.Simple s) {
             String prefix = s.negated() ? "!" : "";
-            String left = s.left();
-            String right = s.right();
+            Expr left = s.left();
+            Expr right = s.right();
 
-            // Class conditions
+            // Extract field name for special-case handling
+            String leftFieldName = (left instanceof Expr.FieldRef fr) ? fr.name() : null;
+
+            // Class conditions (no right operand)
             if ("IS-NUMERIC".equals(s.operator())) {
-                return prefix + recRef(left) + ".getString(\"" + left + "\").trim().matches(\"[0-9.+-]*\")";
+                if (leftFieldName != null) {
+                    return prefix + recRef(leftFieldName) + ".getString(\"" + leftFieldName + "\").trim().matches(\"[0-9.+-]*\")";
+                }
+                return prefix + emitExpr(left) + ".toString().matches(\"[0-9.+-]*\")";
             }
             if ("IS-ALPHABETIC".equals(s.operator())) {
-                return prefix + recRef(left) + ".getString(\"" + left + "\").trim().matches(\"[A-Za-z ]*\")";
+                if (leftFieldName != null) {
+                    return prefix + recRef(leftFieldName) + ".getString(\"" + leftFieldName + "\").trim().matches(\"[A-Za-z ]*\")";
+                }
+                return prefix + emitExpr(left) + ".toString().matches(\"[A-Za-z ]*\")";
             }
 
             // Figurative constants in comparisons
-            if (right != null && (right.equals("SPACES") || right.equals("SPACE"))) {
-                return prefix + recRef(left) + ".getString(\"" + left + "\").trim().isEmpty()";
-            }
-            if (right != null && (right.equals("ZEROS") || right.equals("ZEROES") || right.equals("ZERO"))) {
-                return prefix + recRef(left) + ".getDecimal(\"" + left + "\").isZero()";
-            }
-            if (right != null && (right.equals("HIGH-VALUES") || right.equals("HIGH-VALUE"))) {
-                return prefix + "java.util.Arrays.equals(" + recRef(left)
-                    + ".getBytes(\"" + left + "\"), new byte[]{(byte)0xFF})";
-            }
-            if (right != null && (right.equals("LOW-VALUES") || right.equals("LOW-VALUE"))) {
-                return prefix + "java.util.Arrays.equals(" + recRef(left)
-                    + ".getBytes(\"" + left + "\"), new byte[" + recRef(left)
-                    + ".fieldDef(\"" + left + "\").size()])";
+            if (right instanceof Expr.Figurative fig && leftFieldName != null) {
+                return switch (fig.name()) {
+                    case "SPACES" -> prefix + recRef(leftFieldName) + ".getString(\"" + leftFieldName + "\").trim().isEmpty()";
+                    case "ZEROS" -> prefix + recRef(leftFieldName) + ".getDecimal(\"" + leftFieldName + "\").isZero()";
+                    case "HIGH-VALUES" -> prefix + "java.util.Arrays.equals(" + recRef(leftFieldName)
+                        + ".getBytes(\"" + leftFieldName + "\"), new byte[]{(byte)0xFF})";
+                    case "LOW-VALUES" -> prefix + "java.util.Arrays.equals(" + recRef(leftFieldName)
+                        + ".getBytes(\"" + leftFieldName + "\"), new byte[" + recRef(leftFieldName)
+                        + ".fieldDef(\"" + leftFieldName + "\").size()])";
+                    default -> prefix + emitExpr(left) + ".equalTo(" + emitExpr(right) + ")";
+                };
             }
 
-            String leftExpr = fieldGet(left);
-            String rightExpr = emitValueExpr(right);
+            String leftExpr = emitExpr(left);
+            String rightExpr = emitExpr(right);
             String op = switch (s.operator()) {
                 case "="  -> ".equalTo(" + rightExpr + ")";
                 case ">"  -> ".greaterThan(" + rightExpr + ")";
@@ -867,107 +959,6 @@ public final class JavaEmitter {
         return recRef(fieldName) + ".getDecimal(\"" + fieldName + "\")";
     }
 
-    /**
-     * Convert a COBOL arithmetic expression to chained Decimal method calls.
-     * Handles: + - * / with proper precedence, parentheses, field refs, literals.
-     */
-    private String convertArithmeticExpr(String expr) {
-        String[] tokens = expr.trim().split("\\s+");
-        if (tokens.length == 0) return "Decimal.ZERO";
-        try {
-            return parseExprTokens(tokens, new int[]{0});
-        } catch (Exception e) {
-            diag.warning("emitter", 0, "COMPUTE expression",
-                "Could not fully parse expression '" + expr + "': " + e.getMessage());
-            return "Decimal.of(\"0\") /* TODO: " + expr + " */";
-        }
-    }
-
-    // Recursive descent expression parser for COMPUTE
-    // Precedence (low to high): + - , * / , ** , unary -
-    private String parseExprTokens(String[] tokens, int[] pos) {
-        String left = parseExprTerm(tokens, pos);
-        while (pos[0] < tokens.length) {
-            String op = tokens[pos[0]];
-            if (op.equals("+") || op.equals("-")) {
-                pos[0]++;
-                String right = parseExprTerm(tokens, pos);
-                left = left + (op.equals("+") ? ".add(" : ".subtract(") + right + ")";
-            } else {
-                break;
-            }
-        }
-        return left;
-    }
-
-    private String parseExprTerm(String[] tokens, int[] pos) {
-        String left = parseExprPower(tokens, pos);
-        while (pos[0] < tokens.length) {
-            String op = tokens[pos[0]];
-            if (op.equals("/")) {
-                pos[0]++;
-                String right = parseExprPower(tokens, pos);
-                left = left + ".divide(" + right + ", 10)";
-            } else if (op.equals("*")) {
-                // Check for ** (exponentiation)
-                if (pos[0] + 1 < tokens.length && tokens[pos[0] + 1].equals("*")) {
-                    // It's ** — but only if tokenized as two separate *
-                    // This shouldn't happen with proper tokenization; handle just in case
-                    pos[0] += 2;
-                    String right = parseExprFactor(tokens, pos);
-                    left = left + ".pow(" + right + ".toInt())";
-                } else {
-                    pos[0]++;
-                    String right = parseExprPower(tokens, pos);
-                    left = left + ".multiply(" + right + ")";
-                }
-            } else {
-                break;
-            }
-        }
-        return left;
-    }
-
-    // Exponentiation: higher precedence than * /
-    private String parseExprPower(String[] tokens, int[] pos) {
-        String left = parseExprFactor(tokens, pos);
-        while (pos[0] < tokens.length && tokens[pos[0]].equals("**")) {
-            pos[0]++;
-            String right = parseExprFactor(tokens, pos);
-            left = left + ".pow(" + right + ".toInt())";
-        }
-        return left;
-    }
-
-    private String parseExprFactor(String[] tokens, int[] pos) {
-        if (pos[0] >= tokens.length) return "Decimal.ZERO";
-        String tok = tokens[pos[0]];
-
-        // Unary minus
-        if (tok.equals("-")) {
-            pos[0]++;
-            String operand = parseExprFactor(tokens, pos);
-            return operand + ".negate()";
-        }
-
-        // Parenthesized sub-expression
-        if (tok.equals("(")) {
-            pos[0]++;
-            String inner = parseExprTokens(tokens, pos);
-            if (pos[0] < tokens.length && tokens[pos[0]].equals(")")) pos[0]++;
-            return inner;
-        }
-
-        pos[0]++;
-
-        // Numeric literal (including negative like -1 if tokenized together)
-        if (tok.matches("-?\\d+\\.?\\d*")) {
-            return "Decimal.of(\"" + tok + "\")";
-        }
-
-        // Field reference
-        return fieldGet(tok);
-    }
 
     private String emitSizeErrorHandler(List<Statement> onErr, List<Statement> notErr) {
         if (onErr == null || onErr.isEmpty()) return "";

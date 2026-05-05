@@ -437,40 +437,7 @@ public final class Parser {
             consumeStatementEnd();
             return new Statement.MoveCorresponding(source, target);
         }
-        // Handle MOVE FUNCTION xxx TO ... (intrinsic function call)
-        String source;
-        if (peek("FUNCTION")) {
-            advance(); // consume FUNCTION
-            StringBuilder funcExpr = new StringBuilder("FUNCTION ");
-            while (!atEnd() && !peek("TO")) {
-                funcExpr.append(current().value());
-                advance();
-            }
-            source = funcExpr.toString();
-        } else {
-            // Check for reference modification: FIELD(pos:len)
-            // Peek ahead: if current is WORD and next is LPAREN, might be ref mod
-            if (current().type() == Token.Type.WORD
-                && pos + 1 < tokens.size()
-                && tokens.get(pos + 1).type() == Token.Type.LPAREN) {
-                String fieldName = current().value(); advance(); // consume field name
-                advance(); // consume (
-                String refPos = current().value(); advance(); // position
-                if (current().type() == Token.Type.COLON) {
-                    advance(); // consume :
-                    String refLen = current().value(); advance(); // length
-                    if (current().type() == Token.Type.RPAREN) advance();
-                    source = fieldName + "(" + refPos + ":" + refLen + ")";
-                } else {
-                    // Not ref mod — subscript; reconstruct as plain field
-                    while (!atEnd() && current().type() != Token.Type.RPAREN) advance();
-                    if (current().type() == Token.Type.RPAREN) advance();
-                    source = "\"" + fieldName + "\"";
-                }
-            } else {
-                source = parseValueLiteral();
-            }
-        }
+        Expr source = parseExpr();
         expect("TO");
         List<String> targets = new ArrayList<>();
         while (!atEnd() && !atPeriod()
@@ -485,42 +452,56 @@ public final class Parser {
 
     private Statement parseAdd() {
         advance(); // consume ADD
-        List<String> sources = new ArrayList<>();
+        List<Expr> sources = new ArrayList<>();
         while (!atEnd() && !peek("TO") && !peek("GIVING")) {
-            sources.add(readOperand());
+            sources.add(parseExpr());
         }
-        String to = null, giving = null;
+        List<String> targets = new ArrayList<>();
+        String giving = null;
         boolean rounded = false;
-        if (matchWord("TO")) { to = readOperand(); }
+        if (matchWord("TO")) {
+            while (!atEnd() && !atPeriod() && !peek("GIVING") && !peek("ROUNDED")
+                   && !peek("ON") && !peek("NOT")
+                   && !isVerb(current().value())
+                   && !isScopeTerminator(current().value())) {
+                targets.add(readOperand());
+            }
+        }
         if (matchWord("GIVING")) { giving = readOperand(); }
         if (matchWord("ROUNDED")) rounded = true;
         var onSize = parseSizeError();
         consumeStatementEnd();
-        return new Statement.Add(sources, to, giving, rounded, onSize.get(0), onSize.get(1));
+        return new Statement.Add(sources, targets, giving, rounded, onSize.get(0), onSize.get(1));
     }
 
     private Statement parseSubtract() {
         advance(); // consume SUBTRACT
-        List<String> subtrahends = new ArrayList<>();
+        List<Expr> subtrahends = new ArrayList<>();
         while (!atEnd() && !peek("FROM")) {
-            subtrahends.add(readOperand());
+            subtrahends.add(parseExpr());
         }
         expect("FROM");
-        String from = readOperand();
+        List<String> targets = new ArrayList<>();
+        while (!atEnd() && !atPeriod() && !peek("GIVING") && !peek("ROUNDED")
+               && !peek("ON") && !peek("NOT")
+               && !isVerb(current().value())
+               && !isScopeTerminator(current().value())) {
+            targets.add(readOperand());
+        }
         String giving = null;
         boolean rounded = false;
         if (matchWord("GIVING")) { giving = readOperand(); }
         if (matchWord("ROUNDED")) rounded = true;
         var onSize = parseSizeError();
         consumeStatementEnd();
-        return new Statement.Subtract(subtrahends, from, giving, rounded, onSize.get(0), onSize.get(1));
+        return new Statement.Subtract(subtrahends, targets, giving, rounded, onSize.get(0), onSize.get(1));
     }
 
     private Statement parseMultiply() {
         advance(); // consume MULTIPLY
-        String a = readOperand();
+        Expr a = parseExpr();
         expect("BY");
-        String by = readOperand();
+        Expr by = parseExpr();
         String giving = null;
         boolean rounded = false;
         if (matchWord("GIVING")) { giving = readOperand(); }
@@ -532,12 +513,12 @@ public final class Parser {
 
     private Statement parseDivide() {
         advance(); // consume DIVIDE
-        String dividend = readOperand();
+        Expr dividend = parseExpr();
         String divisorWord = current().value(); advance(); // INTO or BY
-        String divisor = readOperand();
+        Expr divisor = parseExpr();
         // Swap if "DIVIDE X INTO Y" (COBOL: Y / X)
         if (divisorWord.equalsIgnoreCase("INTO")) {
-            String temp = dividend; dividend = divisor; divisor = temp;
+            Expr temp = dividend; dividend = divisor; divisor = temp;
         }
         String giving = null, remainder = null;
         boolean rounded = false;
@@ -555,18 +536,10 @@ public final class Parser {
         boolean rounded = false;
         if (matchWord("ROUNDED")) rounded = true;
         expect("=");
-        // Collect expression tokens until period, verb, scope terminator, or ON SIZE ERROR
-        StringBuilder expr = new StringBuilder();
-        while (!atEnd() && !atPeriod()
-               && !peek("ON") && !peek("NOT")
-               && !isVerb(current().value())
-               && !isScopeTerminator(current().value())) {
-            expr.append(current().value()).append(" ");
-            advance();
-        }
+        Expr expression = parseArithmeticExpr();
         var onSize = parseSizeError();
         consumeStatementEnd();
-        return new Statement.Compute(target, expr.toString().trim(), rounded, onSize.get(0), onSize.get(1));
+        return new Statement.Compute(target, expression, rounded, onSize.get(0), onSize.get(1));
     }
 
     private Statement parseIf() {
@@ -751,16 +724,11 @@ public final class Parser {
 
     private Statement parseDisplay() {
         advance(); // consume DISPLAY
-        List<String> items = new ArrayList<>();
+        List<Expr> items = new ArrayList<>();
         while (!atEnd() && !atPeriod()
                && !isVerb(current().value())
                && !isScopeTerminator(current().value())) {
-            if (current().type() == Token.Type.STRING) {
-                items.add("\"" + current().value() + "\"");
-            } else {
-                items.add(current().value());
-            }
-            advance();
+            items.add(parseExpr());
         }
         consumeStatementEnd();
         return new Statement.Display(items);
@@ -1084,7 +1052,7 @@ public final class Parser {
         }
 
         while (matchWord("WHEN")) {
-            String left = current().value(); advance();
+            String left = readOperand(); // handles FIELD(subscript)
             String right = null;
             if (matchWord("=") || matchWord("EQUAL")) {
                 consumeIf("TO");
@@ -1287,20 +1255,27 @@ public final class Parser {
         String left = current().value();
 
         // Standalone condition name (88-level): no operator follows
-        if (isConditionEnd(1)) {
+        // Check without consuming — if the token after the field name (and any subscript)
+        // is a condition-ender, it's just a condition name
+        if (isConditionEnd(1) && current().type() != Token.Type.WORD) {
+            advance();
+            return new Statement.Condition.ConditionName(left, false);
+        }
+        if (current().type() == Token.Type.WORD && isConditionEnd(1)
+            && (pos + 1 >= tokens.size() || tokens.get(pos + 1).type() != Token.Type.LPAREN)) {
             advance();
             return new Statement.Condition.ConditionName(left, false);
         }
 
-        advance(); // consume left operand
+        Expr leftExpr = parseExpr(); // consume field name + any (subscript)
 
         // IS/ARE noise words, possibly followed by NOT or class condition
         boolean negated = false;
         if (matchWord("IS") || matchWord("ARE")) {
             negated = matchWord("NOT");
             // Class conditions: IS NUMERIC, IS ALPHABETIC
-            if (peek("NUMERIC")) { advance(); return new Statement.Condition.Simple(left, "IS-NUMERIC", null, negated); }
-            if (peek("ALPHABETIC")) { advance(); return new Statement.Condition.Simple(left, "IS-ALPHABETIC", null, negated); }
+            if (peek("NUMERIC")) { advance(); return new Statement.Condition.Simple(leftExpr, "IS-NUMERIC", null, negated); }
+            if (peek("ALPHABETIC")) { advance(); return new Statement.Condition.Simple(leftExpr, "IS-ALPHABETIC", null, negated); }
         } else if (matchWord("NOT")) {
             negated = true;
         }
@@ -1309,11 +1284,12 @@ public final class Parser {
         String operator = parseRelationalOperator();
         if (operator == null) {
             // No operator found — it's a condition-name test
-            return new Statement.Condition.ConditionName(left, negated);
+            String condName = (leftExpr instanceof Expr.FieldRef fr) ? fr.name() : left;
+            return new Statement.Condition.ConditionName(condName, negated);
         }
 
-        String right = readOperand();
-        return new Statement.Condition.Simple(left, operator, right, negated);
+        Expr rightExpr = parseExpr();
+        return new Statement.Condition.Simple(leftExpr, operator, rightExpr, negated);
     }
 
     private Statement.Condition negateCondition(Statement.Condition cond) {
@@ -1426,11 +1402,188 @@ public final class Parser {
         return List.of(onErr, notErr);
     }
 
+    // ── Expression parsing ────────────────────────────────────────────
+
+    /**
+     * Parse a single expression: literal, figurative constant, FUNCTION call, or field reference.
+     * Does NOT handle arithmetic operators (use parseArithmeticExpr for that).
+     */
+    private Expr parseExpr() {
+        Token t = current();
+
+        // String literal
+        if (t.type() == Token.Type.STRING) {
+            advance();
+            return new Expr.StringLit(t.value());
+        }
+
+        // Numeric literal
+        if (t.type() == Token.Type.NUMBER) {
+            advance();
+            return new Expr.NumericLit(t.value());
+        }
+
+        // Unary minus before a number
+        if (t.type() == Token.Type.MINUS && pos + 1 < tokens.size()
+            && tokens.get(pos + 1).type() == Token.Type.NUMBER) {
+            advance(); // consume -
+            String val = current().value();
+            advance();
+            return new Expr.NumericLit("-" + val);
+        }
+
+        // Figurative constants
+        if (t.isAny("SPACES", "SPACE")) { advance(); return Expr.Figurative.SPACES; }
+        if (t.isAny("ZEROS", "ZEROES", "ZERO")) { advance(); return Expr.Figurative.ZEROS; }
+        if (t.isAny("HIGH-VALUES", "HIGH-VALUE")) { advance(); return Expr.Figurative.HIGH_VALUES; }
+        if (t.isAny("LOW-VALUES", "LOW-VALUE")) { advance(); return Expr.Figurative.LOW_VALUES; }
+
+        // FUNCTION call
+        if (t.is("FUNCTION")) {
+            advance(); // consume FUNCTION
+            String funcName = current().value(); advance();
+            List<Expr> args = new ArrayList<>();
+            if (!atEnd() && current().type() == Token.Type.LPAREN) {
+                advance(); // (
+                while (!atEnd() && current().type() != Token.Type.RPAREN) {
+                    args.add(parseExpr());
+                    if (!atEnd() && current().type() == Token.Type.COMMA) advance();
+                }
+                if (!atEnd() && current().type() == Token.Type.RPAREN) advance(); // )
+            }
+            return new Expr.FunctionCall(funcName, args);
+        }
+
+        // Field reference (possibly subscripted or ref-mod)
+        String name = t.value(); advance();
+        if (!atEnd() && current().type() == Token.Type.LPAREN) {
+            advance(); // consume (
+            Expr first = parseExpr();
+            if (!atEnd() && current().type() == Token.Type.COLON) {
+                advance(); // consume :
+                Expr len = parseExpr();
+                if (!atEnd() && current().type() == Token.Type.RPAREN) advance();
+                return Expr.FieldRef.refMod(name, first, len);
+            }
+            if (!atEnd() && current().type() == Token.Type.RPAREN) advance();
+            return Expr.FieldRef.subscripted(name, first);
+        }
+        return new Expr.FieldRef(name);
+    }
+
+    /**
+     * Parse an arithmetic expression (for COMPUTE RHS).
+     * Handles precedence: additive < multiplicative < power < unary < factor.
+     */
+    private Expr parseArithmeticExpr() {
+        return parseAdditiveExpr();
+    }
+
+    private Expr parseAdditiveExpr() {
+        Expr left = parseMultiplicativeExpr();
+        while (!atEnd() && !atPeriod()
+               && !peek("ON") && !peek("NOT")
+               && !isVerb(current().value())
+               && !isScopeTerminator(current().value())) {
+            if (current().type() == Token.Type.PLUS) {
+                advance();
+                Expr right = parseMultiplicativeExpr();
+                left = new Expr.BinaryOp(left, "+", right);
+            } else if (current().type() == Token.Type.MINUS) {
+                advance();
+                Expr right = parseMultiplicativeExpr();
+                left = new Expr.BinaryOp(left, "-", right);
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    private Expr parseMultiplicativeExpr() {
+        Expr left = parsePowerExpr();
+        while (!atEnd() && !atPeriod()) {
+            if (current().type() == Token.Type.STAR) {
+                // Check for ** (exponentiation — should be caught by parsePowerExpr, but handle just in case)
+                if (pos + 1 < tokens.size() && tokens.get(pos + 1).type() == Token.Type.STAR) {
+                    break; // Let parsePowerExpr handle **
+                }
+                advance();
+                Expr right = parsePowerExpr();
+                left = new Expr.BinaryOp(left, "*", right);
+            } else if (current().type() == Token.Type.SLASH) {
+                advance();
+                Expr right = parsePowerExpr();
+                left = new Expr.BinaryOp(left, "/", right);
+            } else {
+                break;
+            }
+        }
+        return left;
+    }
+
+    private Expr parsePowerExpr() {
+        Expr left = parseUnaryExpr();
+        while (!atEnd() && !atPeriod()
+               && current().type() == Token.Type.STAR
+               && pos + 1 < tokens.size() && tokens.get(pos + 1).type() == Token.Type.STAR) {
+            advance(); advance(); // consume **
+            Expr right = parseUnaryExpr();
+            left = new Expr.BinaryOp(left, "**", right);
+        }
+        // Also check for word "**" if lexer produces it as a single token
+        while (!atEnd() && !atPeriod() && current().is("**")) {
+            advance();
+            Expr right = parseUnaryExpr();
+            left = new Expr.BinaryOp(left, "**", right);
+        }
+        return left;
+    }
+
+    private Expr parseUnaryExpr() {
+        if (!atEnd() && current().type() == Token.Type.MINUS) {
+            advance();
+            Expr operand = parseArithFactor();
+            return new Expr.Negate(operand);
+        }
+        if (!atEnd() && current().type() == Token.Type.PLUS) {
+            advance(); // unary + is a no-op
+        }
+        return parseArithFactor();
+    }
+
+    private Expr parseArithFactor() {
+        // Parenthesized sub-expression
+        if (!atEnd() && current().type() == Token.Type.LPAREN) {
+            advance(); // consume (
+            Expr inner = parseAdditiveExpr();
+            if (!atEnd() && current().type() == Token.Type.RPAREN) advance(); // consume )
+            return inner;
+        }
+        // Otherwise delegate to parseExpr for atoms (literals, field refs, functions)
+        return parseExpr();
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────
 
     private String readOperand() {
         String val = current().value();
         advance();
+        // Consume trailing subscript or reference modification: FIELD(idx) or FIELD(pos:len)
+        if (!atEnd() && current().type() == Token.Type.LPAREN) {
+            StringBuilder sub = new StringBuilder(val);
+            sub.append("(");
+            advance(); // consume (
+            while (!atEnd() && current().type() != Token.Type.RPAREN) {
+                sub.append(current().value());
+                advance();
+            }
+            if (!atEnd() && current().type() == Token.Type.RPAREN) {
+                sub.append(")");
+                advance(); // consume )
+            }
+            val = sub.toString();
+        }
         return val;
     }
 

@@ -28,25 +28,25 @@ public sealed interface Statement {
 
     // ── Data movement ───────────────────────────────────────────────
 
-    record Move(String source, List<String> targets) implements Statement {}
+    record Move(Expr source, List<String> targets) implements Statement {}
     record MoveCorresponding(String source, String target) implements Statement {}
     record Initialize(String target) implements Statement {}
 
     // ── Arithmetic ──────────────────────────────────────────────────
 
-    record Add(List<String> sources, String to, String giving, boolean rounded,
+    record Add(List<Expr> sources, List<String> targets, String giving, boolean rounded,
                List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {}
 
-    record Subtract(List<String> subtrahends, String from, String giving, boolean rounded,
+    record Subtract(List<Expr> subtrahends, List<String> targets, String giving, boolean rounded,
                     List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {}
 
-    record Multiply(String a, String by, String giving, boolean rounded,
+    record Multiply(Expr a, Expr by, String giving, boolean rounded,
                     List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {}
 
-    record Divide(String dividend, String divisor, String giving, String remainder,
+    record Divide(Expr dividend, Expr divisor, String giving, String remainder,
                   boolean rounded, List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {}
 
-    record Compute(String target, String expression, boolean rounded,
+    record Compute(String target, Expr expression, boolean rounded,
                    List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {}
 
     // ── Control flow ────────────────────────────────────────────────
@@ -68,7 +68,7 @@ public sealed interface Statement {
 
     // ── I/O ─────────────────────────────────────────────────────────
 
-    record Display(List<String> items) implements Statement {}
+    record Display(List<Expr> items) implements Statement {}
     record Accept(String target) implements Statement {}
 
     record Open(String mode, String fileName) implements Statement {}
@@ -132,7 +132,7 @@ public sealed interface Statement {
     // Conditions form a tree: AND/OR combine sub-conditions.
 
     sealed interface Condition {
-        record Simple(String left, String operator, String right, boolean negated) implements Condition {}
+        record Simple(Expr left, String operator, Expr right, boolean negated) implements Condition {}
         record And(Condition left, Condition right) implements Condition {}
         record Or(Condition left, Condition right) implements Condition {}
         record Not(Condition inner) implements Condition {}
