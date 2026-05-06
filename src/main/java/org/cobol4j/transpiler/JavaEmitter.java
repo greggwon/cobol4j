@@ -119,18 +119,40 @@ public final class JavaEmitter {
     // ── DATA DIVISION → Record definitions ──────────────────────────
 
     private void emitDataDivision() {
-        if (program.dataEntries().isEmpty()) return;
+        if (program.dataEntries().isEmpty() && program.fileBindings().isEmpty()) return;
 
-        line("// ── Working Storage ─────────────────────────────────────");
-        line("");
-
-        // Group entries by 01/77 level
-        List<RecordGroup> groups = groupByLevel01();
-
-        for (RecordGroup group : groups) {
-            emitRecordDefinition(group);
+        // Emit CobolFile declarations for FILE SECTION FD entries
+        if (!program.fileBindings().isEmpty()) {
+            line("// ── File Descriptions ───────────────────────────────────");
+            line("");
+            for (CobolProgram.FileBinding fb : program.fileBindings()) {
+                String fileVar = toJavaFieldName(fb.fileName());
+                String recVar = toJavaFieldName(fb.recordName());
+                StringBuilder sb = new StringBuilder();
+                sb.append("private CobolFile ").append(fileVar)
+                  .append(" = CobolFile.sequential(\"").append(fb.fileName()).append("\")");
+                if (fb.recordSize() > 0) {
+                    sb.append("\n").append("    ".repeat(indent + 1))
+                      .append(".recordSize(").append(fb.recordSize()).append(")");
+                }
+                sb.append("\n").append("    ".repeat(indent + 1)).append(".build();");
+                line(sb.toString());
+                line("");
+            }
         }
-        line("");
+
+        if (!program.dataEntries().isEmpty()) {
+            line("// ── Working Storage ─────────────────────────────────────");
+            line("");
+
+            // Group entries by 01/77 level
+            List<RecordGroup> groups = groupByLevel01();
+
+            for (RecordGroup group : groups) {
+                emitRecordDefinition(group);
+            }
+            line("");
+        }
     }
 
     private void emitRecordDefinition(RecordGroup group) {
@@ -150,6 +172,13 @@ public final class JavaEmitter {
     private void emitDataEntry(CobolProgram.DataEntry entry) {
         if (entry.level() == 88) return; // handled inline with parent
 
+        if (entry.pic() == null && entry.usage() != null
+            && (entry.usage().equals("POINTER") || entry.usage().equals("FUNCTION-POINTER"))) {
+            // POINTER / FUNCTION-POINTER without PIC — emit as alphanumeric field for program name storage
+            line(".pic(\"" + entry.name() + "\", \"X(256)\") // " + entry.usage());
+            return;
+        }
+
         if (entry.pic() == null) {
             // Group item — we flatten for now (groups need lambda syntax)
             // For simplicity, emit as a comment
@@ -166,6 +195,7 @@ public final class JavaEmitter {
                 case "COMP3", "COMPUTATIONAL3", "PACKEDDECIMAL" -> sb.append(".comp3()");
                 case "COMP", "COMP4", "COMPUTATIONAL", "COMPUTATIONAL4", "BINARY" -> sb.append(".comp()");
                 case "COMP5", "COMPUTATIONAL5" -> sb.append(".comp5()");
+                case "POINTER", "FUNCTIONPOINTER" -> sb.append(" // " + entry.usage());
             }
         }
 
@@ -185,6 +215,9 @@ public final class JavaEmitter {
         if (entry.value() != null) {
             sb.append(".value(").append(formatValue(entry.value())).append(")");
         }
+
+        if (entry.isGlobal()) sb.append(" // GLOBAL");
+        if (entry.isExternal()) sb.append(" // EXTERNAL");
 
         line(sb.toString());
 
@@ -229,6 +262,12 @@ public final class JavaEmitter {
             line(".workingStorage(" + toJavaFieldName(g.name) + ")");
         }
 
+        // Bind files to their records
+        for (CobolProgram.FileBinding fb : program.fileBindings()) {
+            line(".file(" + toJavaFieldName(fb.fileName()) + ", "
+                + toJavaFieldName(fb.recordName()) + ")");
+        }
+
         line(".onDisplay(LOG::info)");
 
         for (CobolProgram.Paragraph para : program.paragraphs()) {
@@ -268,7 +307,7 @@ public final class JavaEmitter {
         else if (stmt instanceof Statement.InlinePerform ip) emitInlinePerform(ip);
         else if (stmt instanceof Statement.Perform p) emitPerform(p);
         else if (stmt instanceof Statement.Display d) emitDisplay(d);
-        else if (stmt instanceof Statement.Accept a) line("ctx.accept(" + recRef(a.target()) + ", \"" + a.target() + "\");");
+        else if (stmt instanceof Statement.Accept a) emitAccept(a);
         else if (stmt instanceof Statement.Open o) line("ctx.open(" + toJavaFieldName(o.fileName()) + ", CobolFile.OpenMode." + o.mode().toUpperCase().replace("-", "") + ");");
         else if (stmt instanceof Statement.Close c) line("ctx.close(" + toJavaFieldName(c.fileName()) + ");");
         else if (stmt instanceof Statement.Read r) emitRead(r);
@@ -277,6 +316,8 @@ public final class JavaEmitter {
         else if (stmt instanceof Statement.StopRun s) line("ctx.stopRun();");
         else if (stmt instanceof Statement.ExitParagraph e) line("ctx.exitParagraph();");
         else if (stmt instanceof Statement.SetCondition sc) line(findRecordFor(sc.conditionName()) + ".set(\"" + sc.conditionName() + "\");");
+        else if (stmt instanceof Statement.Invoke inv) emitInvoke(inv);
+        else if (stmt instanceof Statement.CodecVerb cv) emitCodecVerb(cv);
         else if (stmt instanceof Statement.ExecSql sq) emitExecSql(sq);
         else if (stmt instanceof Statement.Call call) emitCall(call);
         else if (stmt instanceof Statement.InspectTallying it) emitInspectTallying(it);
@@ -288,6 +329,7 @@ public final class JavaEmitter {
         else if (stmt instanceof Statement.SortStmt so) emitSortStmt(so);
         else if (stmt instanceof Statement.Rewrite rw) line("ctx.rewrite(" + toJavaFieldName(rw.recordName()) + ", " + recRef(rw.recordName()) + ");");
         else if (stmt instanceof Statement.Delete dl) line("ctx.delete(" + toJavaFieldName(dl.fileName()) + ");");
+        else if (stmt instanceof Statement.Continue c) line("// CONTINUE");
         // WhenClause, CallParam, StringSource, SearchWhen, SortKey handled within parent
     }
 
@@ -490,6 +532,71 @@ public final class JavaEmitter {
             args.append(emitExpr(d.items().get(i)));
         }
         line("ctx.display(" + args + ");");
+    }
+
+    private void emitInvoke(Statement.Invoke inv) {
+        String obj = toJavaFieldName(inv.object());
+        String method = inv.method(); // preserve exactly as the programmer wrote it
+
+        // Build argument list
+        StringBuilder args = new StringBuilder();
+        for (int i = 0; i < inv.args().size(); i++) {
+            if (i > 0) args.append(", ");
+            String arg = inv.args().get(i);
+            // Pass field values — numeric as Decimal, alpha as String
+            args.append(recRef(arg) + ".getDecimal(\"" + arg + "\")");
+        }
+
+        if (inv.method().equalsIgnoreCase("new")) {
+            // Factory/constructor: INVOKE ClassName "new" RETURNING obj
+            String className = toJavaClassName(inv.object());
+            if (inv.returning() != null) {
+                line("var " + toJavaFieldName(inv.returning()) + " = new " + className + "(" + args + ");");
+            } else {
+                line("new " + className + "(" + args + ");");
+            }
+        } else {
+            // Method call: INVOKE object "method" USING args RETURNING result
+            String call = obj + "." + method + "(" + args + ")";
+            if (inv.returning() != null) {
+                line(recRef(inv.returning()) + ".move(\"" + inv.returning() + "\", " + call + ");");
+            } else {
+                line(call + ";");
+            }
+        }
+    }
+
+
+    private void emitCodecVerb(Statement.CodecVerb cv) {
+        String codec = cv.format().toLowerCase(); // "xml" or "json"
+        String rec = recRef(cv.record());
+        if (cv.action().equalsIgnoreCase("GENERATE")) {
+            line(recRef(cv.target()) + ".move(\"" + cv.target()
+                + "\", org.cobol4j.codec.CodecRegistry.instance().to"
+                + (codec.equals("xml") ? "Xml" : "Json") + "(" + rec + "));");
+        } else {
+            // PARSE
+            line("org.cobol4j.codec.CodecRegistry.instance().from"
+                + (codec.equals("xml") ? "Xml" : "Json") + "("
+                + recRef(cv.target()) + ".getString(\"" + cv.target() + "\").trim(), " + rec + ");");
+        }
+    }
+
+    private void emitAccept(Statement.Accept a) {
+        String rec = recRef(a.target());
+        if (a.isFromSystem()) {
+            // ACCEPT target FROM DATE / TIME / DAY / DAY-OF-WEEK
+            String expr = switch (a.from().toUpperCase()) {
+                case "DATE" -> "Intrinsic.currentDate().substring(0, 8)";
+                case "TIME" -> "Intrinsic.currentDate().substring(8, 14)";
+                case "DAY" -> "Intrinsic.currentDate().substring(0, 4) + Intrinsic.currentDate().substring(4, 7)";
+                case "DAY-OF-WEEK" -> "String.valueOf(java.time.LocalDate.now().getDayOfWeek().getValue())";
+                default -> "Intrinsic.currentDate()";
+            };
+            line(rec + ".move(\"" + a.target() + "\", " + expr + ");");
+        } else {
+            line("ctx.accept(" + rec + ", \"" + a.target() + "\");");
+        }
     }
 
     private void emitRead(Statement.Read r) {
@@ -763,8 +870,19 @@ public final class JavaEmitter {
 
     private void emitStringStmt(Statement.StringStmt ss) {
         String rec = recRef(ss.into());
-        line("CobolString.into(" + rec + ", \"" + ss.into() + "\")");
+        boolean hasPointer = ss.pointer() != null && !ss.pointer().isEmpty();
+        if (hasPointer) {
+            // Capture the return value (new pointer position) from execute()
+            line("{");
+            indent++;
+            line("int _stringPtr = CobolString.into(" + rec + ", \"" + ss.into() + "\")");
+        } else {
+            line("CobolString.into(" + rec + ", \"" + ss.into() + "\")");
+        }
         indent++;
+        if (hasPointer) {
+            line(".withPointer((int) " + recRef(ss.pointer()) + ".getLong(\"" + ss.pointer() + "\"))");
+        }
         for (Statement.StringSource src : ss.sources()) {
             String val = src.value();
             if (val.startsWith("\"")) {
@@ -783,11 +901,25 @@ public final class JavaEmitter {
         }
         line(".execute();");
         indent--;
+        if (hasPointer) {
+            line(recRef(ss.pointer()) + ".move(\"" + ss.pointer() + "\", (long) _stringPtr);");
+            indent--;
+            line("}");
+        }
     }
 
     private void emitUnstringStmt(Statement.UnstringStmt us) {
         String rec = recRef(us.source());
-        line("CobolUnstring.from(" + rec + ", \"" + us.source() + "\")");
+        boolean hasTally = us.tallyField() != null && !us.tallyField().isEmpty();
+        boolean hasPointer = us.pointer() != null && !us.pointer().isEmpty();
+        if (hasTally) {
+            // Capture the return value (field count) from execute()
+            line("{");
+            indent++;
+            line("int _unstringCount = CobolUnstring.from(" + rec + ", \"" + us.source() + "\")");
+        } else {
+            line("CobolUnstring.from(" + rec + ", \"" + us.source() + "\")");
+        }
         indent++;
         for (int i = 0; i < us.delimiters().size(); i++) {
             String d = us.delimiters().get(i);
@@ -797,8 +929,16 @@ public final class JavaEmitter {
         for (String field : us.into()) {
             line(".into(" + recRef(field) + ", \"" + field + "\")");
         }
+        if (hasPointer) {
+            line(".withPointer((int) " + recRef(us.pointer()) + ".getLong(\"" + us.pointer() + "\"))");
+        }
         line(".execute();");
         indent--;
+        if (hasTally) {
+            line(recRef(us.tallyField()) + ".move(\"" + us.tallyField() + "\", (long) _unstringCount);");
+            indent--;
+            line("}");
+        }
     }
 
     // ── SEARCH ──────────────────────────────────────────────────
@@ -864,6 +1004,12 @@ public final class JavaEmitter {
         String target = call.target().toLowerCase().replace("\"", "");
         String returning = call.returning();
         List<Statement.CallParam> params = call.params();
+        boolean hasExceptionHandlers = !call.onException().isEmpty() || !call.notOnException().isEmpty();
+
+        if (hasExceptionHandlers) {
+            line("try {");
+            indent++;
+        }
 
         String retAssign = "";
         if (returning != null) {
@@ -980,6 +1126,21 @@ public final class JavaEmitter {
                 line("throw new UnsupportedOperationException(\"CALL \\\"" + target
                     + "\\\" not supported\");");
             }
+        }
+
+        if (hasExceptionHandlers) {
+            if (!call.notOnException().isEmpty()) {
+                // NOT ON EXCEPTION runs when no exception occurs
+                for (Statement s : call.notOnException()) emitStatement(s);
+            }
+            indent--;
+            line("} catch (Exception _cobol4jCallEx) {");
+            indent++;
+            if (!call.onException().isEmpty()) {
+                for (Statement s : call.onException()) emitStatement(s);
+            }
+            indent--;
+            line("}");
         }
     }
 

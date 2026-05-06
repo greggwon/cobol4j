@@ -731,12 +731,75 @@ ctx.call(calcTax, rec.field("WS-AMOUNT"), rec.field("WS-RATE"), rec.field("WS-RE
 | `MessagePort` | interface | Messaging with delivery guarantees (fire-and-forget/at-least-once/exactly-once) |
 | `SystemCall` | interface | POSIX system call mapping (pluggable for JNI/Panama) |
 
+## Schema Management
+
+Records map automatically to database tables with version tracking and auto-migration:
+
+```java
+SchemaManager schema = SchemaManager.using(factory)
+    .table("CUSTOMERS", customerRecord, t -> t.primaryKey("CUST-ID"))
+    .build();
+
+schema.migrate();  // creates tables, detects drift, applies ALTERs
+
+RecordStore store = schema.store("CUSTOMERS");
+store.insert(session, rec);
+store.findByKey(session, rec, "C001");
+store.update(session, rec);
+```
+
+Schema versions are tracked in a `COBOL4J_SCHEMA` table. When a Record definition
+changes (field added, size expanded), `migrate()` detects the diff and generates
+the appropriate ALTER TABLE statements.
+
+## OO COBOL — INVOKE
+
+OO COBOL's INVOKE maps directly to Java method calls since we're already in Java:
+
+```cobol
+INVOKE myObject "calculateTax" USING WS-AMOUNT RETURNING WS-TAX.
+INVOKE TaxService "new" RETURNING WS-SERVICE.
+```
+
+Transpiles to:
+
+```java
+rec.move("WS-TAX", myObject.calculateTax(rec.getDecimal("WS-AMOUNT")));
+var wsService = new TaxService();
+```
+
+Method names are preserved exactly as written — no case transformation.
+
+## Embedded SQL — Host Variable Binding
+
+EXEC SQL with `:HOST-VAR` references auto-translates to CobolSql API calls:
+
+```cobol
+EXEC SQL
+    SELECT CUST_NAME, BALANCE INTO :WS-NAME, :WS-BAL
+    FROM CUSTOMERS WHERE CUST_ID = :WS-ID
+END-EXEC.
+```
+
+Transpiles to:
+
+```java
+sql.select("SELECT CUST_NAME, BALANCE FROM CUSTOMERS WHERE CUST_ID = ?")
+    .param(rec, "WS-ID")
+    .into(rec, "WS-NAME", "WS-BAL")
+    .execute();
+```
+
+Supports SELECT INTO, INSERT/UPDATE/DELETE, DECLARE CURSOR, OPEN/FETCH/CLOSE,
+COMMIT, ROLLBACK — all with automatic host variable replacement.
+
 ## Building
 
 ```bash
 export JAVA_HOME=/path/to/jdk17
-mvn clean test        # run all tests (328 tests)
+mvn clean test        # run all tests
 mvn package           # build the runner JAR
+make all              # or use the Makefile
 ```
 
 Requires Java 17+ and Maven. Tests use JUnit 5, H2, and SQLite.
@@ -744,24 +807,37 @@ Zero external production dependencies.
 
 ## Status
 
-Working prototype with **328 passing tests** across 83+ source files (~21,000 lines).
+**444 passing tests** across 104 source files (~27,700 lines).
 
 Implemented:
 - Full COBOL runtime: Record, Decimal, Field, Variable, Program, all COBOL verbs
-- Transpiler: lexer, parser (recursive descent), Java emitter, COPY/REPLACE preprocessor
+- Transpiler: recursive descent parser with Expression AST, proper precedence, error recovery
+- COPY/REPLACE preprocessor with copybook resolution
+- EXEC SQL host variable parsing (`:HOST-VAR` → `?` with auto-binding)
 - Runner: transpile, compile, and execute COBOL programs directly
 - SQL: SELECT INTO, cursors, DML, SqlSession, ConnectionFactory.jdbc().cached()
-- Interop: EBCDIC codec, copybook importer, mainframe file reader/writer
-- CICS: transaction container with hot-deploy, TS queues, LINK/XCTL, SYNCPOINT
-- Messaging: MessagePort with three delivery semantics
+- Schema management: auto-migration with version tracking
+- Interop: EBCDIC codec (CP037/CP500/CP1047), copybook importer, mainframe file I/O
+- CICS: transaction container with hot-deploy via ServiceLoader
+- Messaging: MessagePort with fire-and-forget/at-least-once/exactly-once delivery
 - Codecs: JSON/XML generate/parse, ServiceLoader plugin system
 - SystemCall: POSIX function mapping for transpiled CALL statements
+- OO COBOL: INVOKE verb → Java method calls
+- FILE SECTION / FD with file-record binding
+- EVALUATE WHEN THRU ranges and fall-through
+- AND/OR compound conditions with proper precedence
+- SIGN IS LEADING/TRAILING/SEPARATE
+- PIC N (NATIONAL/Unicode)
+- GLOBAL/EXTERNAL, POINTER/FUNCTION-POINTER
+- ACCEPT FROM DATE/TIME/DAY
+- ON EXCEPTION / NOT ON EXCEPTION
+- STRING/UNSTRING WITH POINTER and TALLYING
+- ADD/SUBTRACT CORRESPONDING
 
 Remaining:
 - Report Writer (REPORT SECTION — declarative report generation)
 - Screen Section (terminal UI)
-- OO COBOL (CLASS-ID, METHOD-ID, INVOKE)
-- Additional EBCDIC code pages
+- USE AFTER EXCEPTION (Declaratives)
 
 ## License
 

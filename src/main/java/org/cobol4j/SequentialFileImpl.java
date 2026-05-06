@@ -20,6 +20,7 @@ package org.cobol4j;
 
 import java.io.*;
 import java.util.function.Consumer;
+import java.util.logging.Logger;
 
 /**
  * Sequential file implementation backed by a flat file on disk.
@@ -28,6 +29,8 @@ import java.util.function.Consumer;
  * This mirrors COBOL sequential file organization.
  */
 final class SequentialFileImpl implements CobolFile {
+
+    private static final Logger LOG = Logger.getLogger(SequentialFileImpl.class.getName());
 
     private final String name;
     private final String path;
@@ -38,6 +41,7 @@ final class SequentialFileImpl implements CobolFile {
 
     private InputStream input;
     private OutputStream output;
+    private RandomAccessFile ioFile;
     private OpenMode currentMode;
 
     SequentialFileImpl(String name, String path, int recordSize,
@@ -62,8 +66,11 @@ final class SequentialFileImpl implements CobolFile {
                 case INPUT -> input = new BufferedInputStream(new FileInputStream(path));
                 case OUTPUT -> output = new BufferedOutputStream(new FileOutputStream(path));
                 case EXTEND -> output = new BufferedOutputStream(new FileOutputStream(path, true));
-                case IO -> throw new UnsupportedOperationException(
-                    "OPEN I-O not supported for sequential files");
+                case IO -> {
+                    // I-O mode: open with RandomAccessFile for both reading and writing
+                    ioFile = new RandomAccessFile(path, "rw");
+                    LOG.fine("Opened sequential file '" + name + "' in I-O mode via RandomAccessFile");
+                }
             }
             fileStatus.set(FileStatus.SUCCESS);
             if (onOpen != null) onOpen.accept(this);
@@ -79,6 +86,7 @@ final class SequentialFileImpl implements CobolFile {
         try {
             if (input != null) { input.close(); input = null; }
             if (output != null) { output.close(); output = null; }
+            if (ioFile != null) { ioFile.close(); ioFile = null; }
             fileStatus.set(FileStatus.SUCCESS);
             if (onClose != null) onClose.accept(this);
         } catch (IOException e) {
@@ -89,6 +97,10 @@ final class SequentialFileImpl implements CobolFile {
 
     @Override
     public boolean read(byte[] buffer) {
+        // I-O mode: read via RandomAccessFile
+        if (ioFile != null) {
+            return readFromRandomAccess(buffer);
+        }
         if (input == null) {
             fileStatus.set(FileStatus.LOGIC_ERROR);
             return false;
@@ -119,8 +131,39 @@ final class SequentialFileImpl implements CobolFile {
         }
     }
 
+    private boolean readFromRandomAccess(byte[] buffer) {
+        try {
+            int totalRead = 0;
+            int size = Math.min(recordSize, buffer.length);
+            while (totalRead < size) {
+                int n = ioFile.read(buffer, totalRead, size - totalRead);
+                if (n < 0) {
+                    if (totalRead == 0) {
+                        fileStatus.set(FileStatus.END_OF_FILE);
+                        return false;
+                    }
+                    break;
+                }
+                totalRead += n;
+            }
+            for (int i = totalRead; i < buffer.length; i++) {
+                buffer[i] = (byte) ' ';
+            }
+            fileStatus.set(FileStatus.SUCCESS);
+            return true;
+        } catch (IOException e) {
+            fileStatus.set(FileStatus.IO_ERROR);
+            return false;
+        }
+    }
+
     @Override
     public void write(byte[] buffer) {
+        // I-O mode: write via RandomAccessFile
+        if (ioFile != null) {
+            writeToRandomAccess(buffer);
+            return;
+        }
         if (output == null) {
             fileStatus.set(FileStatus.LOGIC_ERROR);
             return;
@@ -139,9 +182,34 @@ final class SequentialFileImpl implements CobolFile {
         }
     }
 
+    private void writeToRandomAccess(byte[] buffer) {
+        try {
+            ioFile.write(buffer, 0, Math.min(recordSize, buffer.length));
+            if (buffer.length < recordSize) {
+                byte[] pad = new byte[recordSize - buffer.length];
+                java.util.Arrays.fill(pad, (byte) ' ');
+                ioFile.write(pad);
+            }
+            fileStatus.set(FileStatus.SUCCESS);
+        } catch (IOException e) {
+            fileStatus.set(FileStatus.IO_ERROR);
+        }
+    }
+
     @Override
     public void rewrite(byte[] buffer) {
-        fileStatus.set(FileStatus.LOGIC_ERROR); // not supported for sequential
+        if (ioFile != null) {
+            // In I-O mode, REWRITE replaces the last-read record
+            try {
+                long currentPos = ioFile.getFilePointer();
+                ioFile.seek(currentPos - recordSize); // back up one record
+                writeToRandomAccess(buffer);
+            } catch (IOException e) {
+                fileStatus.set(FileStatus.IO_ERROR);
+            }
+            return;
+        }
+        fileStatus.set(FileStatus.LOGIC_ERROR); // not supported for sequential in non-IO mode
     }
 
     @Override

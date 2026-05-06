@@ -40,7 +40,8 @@ public final class Pic {
         ALPHANUMERIC,
         NUMERIC,
         NUMERIC_EDITED,
-        ALPHANUMERIC_EDITED
+        ALPHANUMERIC_EDITED,
+        NATIONAL
     }
 
     // ── Instance state ──────────────────────────────────────────────
@@ -85,7 +86,7 @@ public final class Pic {
             idx = 1;
         }
 
-        boolean hasX = false, hasA = false, has9 = false;
+        boolean hasX = false, hasA = false, has9 = false, hasN = false;
         boolean hasV = false, hasEditChars = false;
         int intDigits = 0, decDigits = 0;
         boolean afterDecimal = false;
@@ -94,6 +95,7 @@ public final class Pic {
         for (int i = idx; i < expanded.length(); i++) {
             char c = expanded.charAt(i);
             switch (c) {
+                case 'N' -> { hasN = true; dSize += 2; } // NATIONAL: double-byte
                 case 'X' -> { hasX = true; dSize++; }
                 case 'A' -> { hasA = true; dSize++; }
                 case '9' -> {
@@ -137,7 +139,7 @@ public final class Pic {
             }
         }
 
-        Category cat = classify(hasX, hasA, has9, hasEditChars);
+        Category cat = hasN ? Category.NATIONAL : classify(hasX, hasA, has9, hasEditChars);
 
         return new Pic(src, expanded, cat, signed, intDigits, decDigits, dSize);
     }

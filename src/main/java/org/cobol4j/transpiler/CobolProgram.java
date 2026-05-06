@@ -26,8 +26,20 @@ import java.util.List;
 public record CobolProgram(
     String programId,
     List<DataEntry> dataEntries,
-    List<Paragraph> paragraphs
+    List<Paragraph> paragraphs,
+    List<FileBinding> fileBindings
 ) {
+    /** Backward-compatible constructor without fileBindings. */
+    public CobolProgram(String programId, List<DataEntry> dataEntries, List<Paragraph> paragraphs) {
+        this(programId, dataEntries, paragraphs, List.of());
+    }
+
+    /**
+     * A binding between an FD file name and its associated record.
+     * Represents the FILE SECTION's association of a file descriptor
+     * with a 01-level record layout.
+     */
+    public record FileBinding(String fileName, String recordName, int recordSize) {}
     /**
      * A parsed DATA DIVISION entry (01-level through 88-level).
      */
@@ -41,14 +53,24 @@ public record CobolProgram(
         int occurs,          // 0 = not an array
         String dependingOn,  // null if not OCCURS DEPENDING ON
         List<Condition88> conditions,
-        String signClause    // null = default TRAILING, e.g. "LEADING", "TRAILING_SEPARATE", "LEADING_SEPARATE"
+        String signClause,   // null = default TRAILING, e.g. "LEADING", "TRAILING_SEPARATE", "LEADING_SEPARATE"
+        boolean isGlobal,    // GLOBAL clause present
+        boolean isExternal   // EXTERNAL clause present
     ) {
-        /** Backward-compatible constructor without signClause. */
+        /** Backward-compatible constructor without signClause/global/external. */
         public DataEntry(int level, String name, String pic, String usage,
                          String value, String redefines, int occurs,
                          String dependingOn, List<Condition88> conditions) {
             this(level, name, pic, usage, value, redefines, occurs,
-                 dependingOn, conditions, null);
+                 dependingOn, conditions, null, false, false);
+        }
+        /** Backward-compatible constructor without global/external. */
+        public DataEntry(int level, String name, String pic, String usage,
+                         String value, String redefines, int occurs,
+                         String dependingOn, List<Condition88> conditions,
+                         String signClause) {
+            this(level, name, pic, usage, value, redefines, occurs,
+                 dependingOn, conditions, signClause, false, false);
         }
     }
 

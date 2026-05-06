@@ -273,6 +273,34 @@ public final class Record {
         return this;
     }
 
+    /** ADD CORRESPONDING — add matching numeric fields from source to this record. */
+    public Record addCorresponding(Record source) {
+        for (String fieldName : source.fieldsByName.keySet()) {
+            FieldDef target = fieldsByName.get(fieldName);
+            if (target != null && target.isElementary() && target.isNumeric()) {
+                FieldDef src = source.fieldsByName.get(fieldName);
+                if (src != null && src.isElementary() && src.isNumeric()) {
+                    add(fieldName, source.getDecimal(fieldName));
+                }
+            }
+        }
+        return this;
+    }
+
+    /** SUBTRACT CORRESPONDING — subtract matching numeric fields. */
+    public Record subtractCorresponding(Record source) {
+        for (String fieldName : source.fieldsByName.keySet()) {
+            FieldDef target = fieldsByName.get(fieldName);
+            if (target != null && target.isElementary() && target.isNumeric()) {
+                FieldDef src = source.fieldsByName.get(fieldName);
+                if (src != null && src.isElementary() && src.isNumeric()) {
+                    subtract(fieldName, source.getDecimal(fieldName));
+                }
+            }
+        }
+        return this;
+    }
+
     /** MOVE SPACES — fill field with spaces. */
     public Record moveSpaces(String fieldName) {
         FieldDef f = requireField(fieldName);
@@ -892,6 +920,24 @@ public final class Record {
         FieldDef f = requireField(fieldName);
         int start = f.offset() + position - 1; // 1-based to 0-based
         return new String(data, start, length);
+    }
+
+    /**
+     * Reference modification on the receiving side — write into a substring of a field.
+     * Position is 1-based (COBOL style).
+     * {@code MOVE "ABC" TO FIELD(5:3)} writes "ABC" into positions 5-7 of FIELD.
+     */
+    public Record moveSubstring(String fieldName, int position, int length, String value) {
+        FieldDef f = requireField(fieldName);
+        int start = f.offset() + position - 1;
+        String padded = value;
+        if (padded.length() < length) {
+            padded = padded + " ".repeat(length - padded.length());
+        }
+        for (int i = 0; i < length && i < padded.length(); i++) {
+            data[start + i] = (byte) padded.charAt(i);
+        }
+        return this;
     }
 
     // ═══════════════════════════════════════════════════════════════

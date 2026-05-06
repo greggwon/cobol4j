@@ -71,11 +71,19 @@ public sealed interface Statement {
     record GoTo(String paragraph) implements Statement {}
     record StopRun() implements Statement {}
     record ExitParagraph() implements Statement {}
+    record Continue() implements Statement {}
 
     // ── I/O ─────────────────────────────────────────────────────────
 
-    record Display(List<Expr> items) implements Statement {}
-    record Accept(String target) implements Statement {}
+    record Display(List<Expr> items, String upon) implements Statement {
+        /** Backward-compatible constructor without UPON. */
+        public Display(List<Expr> items) { this(items, null); }
+    }
+    record Accept(String target, String from) implements Statement {
+        /** Terminal accept (no FROM). */
+        public Accept(String target) { this(target, null); }
+        public boolean isFromSystem() { return from != null; }
+    }
 
     record Open(String mode, String fileName) implements Statement {}
     record Close(String fileName) implements Statement {}
@@ -116,7 +124,17 @@ public sealed interface Statement {
     record SortStmt(String sortFile, List<SortKey> keys,
                      String using, String giving,
                      boolean hasInputProc, String inputProc,
-                     boolean hasOutputProc, String outputProc) implements Statement {}
+                     boolean hasOutputProc, String outputProc,
+                     boolean duplicatesInOrder) implements Statement {
+        /** Backward-compatible constructor without duplicatesInOrder. */
+        public SortStmt(String sortFile, List<SortKey> keys,
+                        String using, String giving,
+                        boolean hasInputProc, String inputProc,
+                        boolean hasOutputProc, String outputProc) {
+            this(sortFile, keys, using, giving, hasInputProc, inputProc,
+                 hasOutputProc, outputProc, false);
+        }
+    }
     record SortKey(String field, boolean ascending) implements Statement {}
 
     // ── File operations (additional) ────────────────────────────
@@ -124,9 +142,30 @@ public sealed interface Statement {
     record Rewrite(String recordName, String from) implements Statement {}
     record Delete(String fileName) implements Statement {}
 
+    // ── XML/JSON GENERATE/PARSE ───────────────────────────────────
+
+    /** XML GENERATE / JSON GENERATE / XML PARSE / JSON PARSE */
+    record CodecVerb(String format, String action, String record, String target) implements Statement {
+        // format: "XML" or "JSON"
+        // action: "GENERATE" or "PARSE"
+        // record: the record to serialize/deserialize
+        // target: the field to write to (GENERATE) or read from (PARSE)
+    }
+
+    // ── OO COBOL — INVOKE ─────────────────────────────────────────
+
+    /** INVOKE object "method" USING args RETURNING result */
+    record Invoke(String object, String method, List<String> args, String returning) implements Statement {}
+
     // ── CALL — subprogram or system call ──────────────────────────
 
-    record Call(String target, List<CallParam> params, String returning) implements Statement {}
+    record Call(String target, List<CallParam> params, String returning,
+                List<Statement> onException, List<Statement> notOnException) implements Statement {
+        /** Backward-compatible constructor without exception handlers. */
+        public Call(String target, List<CallParam> params, String returning) {
+            this(target, params, returning, List.of(), List.of());
+        }
+    }
     record CallParam(String value, PassMode mode) implements Statement {}
     enum PassMode { BY_REFERENCE, BY_CONTENT, BY_VALUE }
 

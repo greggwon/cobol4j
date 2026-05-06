@@ -68,6 +68,7 @@ public final class Parser {
         String programId = "UNNAMED";
         List<CobolProgram.DataEntry> dataEntries = new ArrayList<>();
         List<CobolProgram.Paragraph> paragraphs = new ArrayList<>();
+        List<CobolProgram.FileBinding> fileBindings = new ArrayList<>();
 
         // Parse divisions in order
         if (matchWord("IDENTIFICATION")) {
@@ -79,13 +80,13 @@ public final class Parser {
             skipDivision();
         }
         if (matchWord("DATA")) {
-            dataEntries = parseDataDivision();
+            dataEntries = parseDataDivision(fileBindings);
         }
         if (matchWord("PROCEDURE")) {
             paragraphs = parseProcedureDivision();
         }
 
-        return new CobolProgram(programId, dataEntries, paragraphs);
+        return new CobolProgram(programId, dataEntries, paragraphs, fileBindings);
     }
 
     // ── IDENTIFICATION DIVISION ─────────────────────────────────────
@@ -109,15 +110,20 @@ public final class Parser {
 
     // ── DATA DIVISION ───────────────────────────────────────────────
 
-    private List<CobolProgram.DataEntry> parseDataDivision() {
+    private List<CobolProgram.DataEntry> parseDataDivision(List<CobolProgram.FileBinding> fileBindings) {
         expect("DIVISION");
         consumePeriod();
         List<CobolProgram.DataEntry> entries = new ArrayList<>();
 
-        // Skip to WORKING-STORAGE SECTION or PROCEDURE DIVISION
         while (!atEnd() && !peek("PROCEDURE")) {
+            if (matchWord("FILE")) {
+                expect("SECTION");
+                consumePeriod();
+                parseFileSection(entries, fileBindings);
+                continue;
+            }
             if (matchWord("WORKING-STORAGE") || matchWord("LOCAL-STORAGE")
-                || matchWord("FILE") || matchWord("LINKAGE")) {
+                || matchWord("LINKAGE")) {
                 expect("SECTION");
                 consumePeriod();
                 continue;
@@ -134,6 +140,78 @@ public final class Parser {
             advance();
         }
         return entries;
+    }
+
+    /**
+     * Parse FILE SECTION: one or more FD entries, each followed by its record definitions.
+     * <pre>
+     * FILE SECTION.
+     * FD file-name [RECORD CONTAINS n CHARACTERS] [BLOCK CONTAINS ...] [LABEL RECORDS ...].
+     * 01 record-name.
+     *    05 field-name PIC ...
+     * </pre>
+     */
+    private void parseFileSection(List<CobolProgram.DataEntry> entries,
+                                  List<CobolProgram.FileBinding> fileBindings) {
+        while (!atEnd() && !peek("WORKING-STORAGE") && !peek("LOCAL-STORAGE")
+               && !peek("LINKAGE") && !peek("PROCEDURE")) {
+            if (matchWord("FD")) {
+                String fileName = current().value();
+                advance(); // consume file name
+
+                int recordSize = 0;
+                // Skip FD clauses until period
+                while (!atEnd() && !atPeriod()) {
+                    if (matchWord("RECORD")) {
+                        consumeIf("CONTAINS");
+                        if (current().type() == Token.Type.NUMBER) {
+                            recordSize = Integer.parseInt(current().value());
+                            advance();
+                        }
+                        consumeIf("CHARACTERS");
+                        consumeIf("CHARACTER");
+                    } else {
+                        // Skip other FD clauses: BLOCK CONTAINS, LABEL RECORDS, DATA RECORDS, etc.
+                        advance();
+                    }
+                }
+                consumePeriod();
+
+                // Parse record definitions under this FD — they are 01-level entries
+                String firstRecordName = null;
+                while (!atEnd() && current().type() == Token.Type.NUMBER) {
+                    int level = Integer.parseInt(current().value());
+                    if (level < 1 || level > 88) break;
+
+                    // Capture the 01-level record name before parsing the entry
+                    if (level == 1 && firstRecordName == null) {
+                        // The name follows the level number
+                        if (pos + 1 < tokens.size()) {
+                            firstRecordName = tokens.get(pos + 1).value();
+                        }
+                    }
+
+                    entries.addAll(parseDataEntry(level));
+                }
+
+                if (firstRecordName != null) {
+                    fileBindings.add(new CobolProgram.FileBinding(fileName, firstRecordName, recordSize));
+                }
+            } else if (matchWord("SD")) {
+                // Sort/Merge file descriptors — skip like FD but don't bind
+                advance(); // consume sort file name
+                while (!atEnd() && !atPeriod()) advance();
+                consumePeriod();
+                // Skip record definitions under SD
+                while (!atEnd() && current().type() == Token.Type.NUMBER) {
+                    int level = Integer.parseInt(current().value());
+                    if (level < 1 || level > 88) break;
+                    entries.addAll(parseDataEntry(level));
+                }
+            } else {
+                advance();
+            }
+        }
     }
 
     private List<CobolProgram.DataEntry> parseDataEntry(int level) {
@@ -153,6 +231,8 @@ public final class Parser {
         int occurs = 0;
         String dependingOn = null;
         String signClause = null;
+        boolean isGlobal = false;
+        boolean isExternal = false;
 
         // Parse clauses until period
         while (!atEnd() && !atPeriod()) {
@@ -167,6 +247,10 @@ public final class Parser {
                        || matchWord("COMPUTATIONAL-3") || matchWord("BINARY")
                        || matchWord("PACKED-DECIMAL")) {
                 usage = tokens.get(pos - 1).value(); // the word we just matched
+            } else if (matchWord("POINTER")) {
+                usage = "POINTER";
+            } else if (matchWord("FUNCTION-POINTER")) {
+                usage = "FUNCTION-POINTER";
             } else if (matchWord("SIGN")) {
                 consumeIf("IS");
                 signClause = parseSignClause();
@@ -185,6 +269,17 @@ public final class Parser {
                     dependingOn = current().value();
                     advance();
                 }
+            } else if (matchWord("GLOBAL")) {
+                isGlobal = true;
+                diag.info("parser", current().line(), "GLOBAL",
+                    "GLOBAL clause on " + name + " — informational in transpiled code.");
+            } else if (matchWord("EXTERNAL")) {
+                isExternal = true;
+                diag.info("parser", current().line(), "EXTERNAL",
+                    "EXTERNAL clause on " + name + " — informational in transpiled code.");
+            } else if (matchWord("IS") && (peek("GLOBAL") || peek("EXTERNAL"))) {
+                // Handle "IS GLOBAL" / "IS EXTERNAL" variant
+                continue;
             } else {
                 diag.warning("parser", current().line(), current().value(),
                     "Unrecognized data clause '" + current().value()
@@ -205,7 +300,8 @@ public final class Parser {
         }
 
         CobolProgram.DataEntry entry = new CobolProgram.DataEntry(
-            level, name, pic, usage, value, redefines, occurs, dependingOn, conditions, signClause);
+            level, name, pic, usage, value, redefines, occurs, dependingOn,
+            conditions, signClause, isGlobal, isExternal);
         return List.of(entry);
     }
 
@@ -283,7 +379,7 @@ public final class Parser {
 
     private boolean isPicChar(Token t) {
         if (t.type() == Token.Type.WORD) {
-            // PIC characters: S, 9, X, A, V, Z, B, P, etc.
+            // PIC characters: S, 9, X, A, V, Z, B, P, N, etc.
             String v = t.value();
             // Reject COBOL keywords that could follow a PIC string
             if (v.equals("SIGN") || v.equals("VALUE") || v.equals("USAGE")
@@ -292,11 +388,13 @@ public final class Parser {
                 || v.equals("BINARY") || v.equals("PACKED-DECIMAL")
                 || v.equals("OCCURS") || v.equals("REDEFINES")
                 || v.equals("IS") || v.equals("TRAILING") || v.equals("LEADING")
-                || v.equals("SEPARATE") || v.equals("CHARACTER")) {
+                || v.equals("SEPARATE") || v.equals("CHARACTER")
+                || v.equals("GLOBAL") || v.equals("EXTERNAL")
+                || v.equals("POINTER") || v.equals("FUNCTION-POINTER")) {
                 return false;
             }
-            return v.matches("[SXA9VZPB*+\\-$/,0]+")
-                || v.matches("[SXA9VZPB*+\\-$/,0]+(\\(\\d+\\))+");
+            return v.matches("[SNXA9VZPB*+\\-$/,0]+")
+                || v.matches("[SNXA9VZPB*+\\-$/,0]+(\\(\\d+\\))+");
         }
         if (t.type() == Token.Type.NUMBER) return true; // digits in PIC
         if (t.type() == Token.Type.LPAREN || t.type() == Token.Type.RPAREN) return true;
@@ -404,7 +502,8 @@ public final class Parser {
             case "EXIT"       -> parseExit();
             case "EXEC"       -> parseExecSql();
             case "CALL"       -> parseCall();
-            case "CONTINUE"   -> { advance(); consumeStatementEnd(); yield null; }
+            case "INVOKE"     -> parseInvoke();
+            case "CONTINUE"   -> { advance(); consumeStatementEnd(); yield new Statement.Continue(); }
 
             case "INSPECT"    -> parseInspect();
             case "STRING"     -> parseString();
@@ -414,6 +513,8 @@ public final class Parser {
             case "REWRITE"    -> parseRewrite();
             case "DELETE"     -> parseDelete();
             case "MERGE"      -> parseMerge();
+            case "XML"        -> parseXmlJsonVerb("XML");
+            case "JSON"       -> parseXmlJsonVerb("JSON");
 
             // ── Truly unknown ───────────────────────────────────────
             default -> {
@@ -441,6 +542,7 @@ public final class Parser {
         expect("TO");
         List<String> targets = new ArrayList<>();
         while (!atEnd() && !atPeriod()
+               && !isExceptionPhrase()
                && !isVerb(current().value())
                && !isScopeTerminator(current().value())) {
             targets.add(current().value());
@@ -772,19 +874,34 @@ public final class Parser {
         advance(); // consume DISPLAY
         List<Expr> items = new ArrayList<>();
         while (!atEnd() && !atPeriod()
+               && !peek("UPON")
+               && !isExceptionPhrase()
                && !isVerb(current().value())
                && !isScopeTerminator(current().value())) {
             items.add(parseExpr());
         }
+        // Parse optional UPON device-name
+        String upon = null;
+        if (matchWord("UPON")) {
+            upon = current().value();
+            advance(); // consume device name (CONSOLE, SYSPUNCH, SYSOUT, etc.)
+        }
         consumeStatementEnd();
-        return new Statement.Display(items);
+        return new Statement.Display(items, upon);
     }
 
     private Statement parseAccept() {
         advance(); // consume ACCEPT
         String target = current().value(); advance();
+        // ACCEPT target FROM DATE / TIME / DAY / DAY-OF-WEEK
+        String from = null;
+        if (matchWord("FROM")) {
+            if (peek("DATE") || peek("TIME") || peek("DAY") || peek("DAY-OF-WEEK")) {
+                from = current().value(); advance();
+            }
+        }
         consumeStatementEnd();
-        return new Statement.Accept(target);
+        return new Statement.Accept(target, from);
     }
 
     private Statement parseOpen() {
@@ -893,6 +1010,7 @@ public final class Parser {
         if (matchWord("USING")) {
             Statement.PassMode mode = Statement.PassMode.BY_REFERENCE; // COBOL default
             while (!atEnd() && !atPeriod() && !peek("RETURNING") && !peek("END-CALL")
+                   && !peek("ON") && !peek("NOT")
                    && !isVerb(current().value())) {
                 if (matchWord("BY")) {
                     if (matchWord("REFERENCE")) mode = Statement.PassMode.BY_REFERENCE;
@@ -920,9 +1038,25 @@ public final class Parser {
             advance();
         }
 
+        // Parse ON EXCEPTION / NOT ON EXCEPTION
+        List<Statement> onException = new ArrayList<>();
+        List<Statement> notOnException = new ArrayList<>();
+        if (matchWord("ON") && matchWord("EXCEPTION")) {
+            while (!atEnd() && !peek("NOT") && !peek("END-CALL") && !atPeriod()) {
+                Statement s = parseStatement();
+                if (s != null) onException.add(s);
+            }
+        }
+        if (matchWord("NOT") && matchWord("ON") && matchWord("EXCEPTION")) {
+            while (!atEnd() && !peek("END-CALL") && !atPeriod()) {
+                Statement s = parseStatement();
+                if (s != null) notOnException.add(s);
+            }
+        }
+
         matchWord("END-CALL");
         consumeStatementEnd();
-        return new Statement.Call(target, params, returning);
+        return new Statement.Call(target, params, returning, onException, notOnException);
     }
 
     // ── INSPECT ──────────────────────────────────────────────────
@@ -1135,11 +1269,30 @@ public final class Parser {
             }
             consumeIf("KEY");
             while (!atEnd() && !peek("ON") && !peek("ASCENDING") && !peek("DESCENDING")
+                   && !peek("WITH") && !peek("DUPLICATES")
                    && !peek("USING") && !peek("GIVING") && !peek("INPUT")
                    && !peek("OUTPUT") && !atPeriod()) {
                 keys.add(new Statement.SortKey(current().value(), ascending));
                 advance();
             }
+        }
+
+        // Parse optional WITH DUPLICATES IN ORDER
+        boolean duplicatesInOrder = false;
+        if (matchWord("WITH")) {
+            if (matchWord("DUPLICATES")) {
+                consumeIf("IN");
+                consumeIf("ORDER");
+                duplicatesInOrder = true;
+                diag.info("parser", current().line(), "SORT DUPLICATES",
+                    "WITH DUPLICATES IN ORDER acknowledged — Java's sort is already stable (TimSort).");
+            }
+        } else if (matchWord("DUPLICATES")) {
+            consumeIf("IN");
+            consumeIf("ORDER");
+            duplicatesInOrder = true;
+            diag.info("parser", current().line(), "SORT DUPLICATES",
+                "DUPLICATES IN ORDER acknowledged — Java's sort is already stable (TimSort).");
         }
 
         String using = null, giving = null;
@@ -1163,7 +1316,7 @@ public final class Parser {
 
         consumeStatementEnd();
         return new Statement.SortStmt(sortFile, keys, using, giving,
-            hasInputProc, inputProc, hasOutputProc, outputProc);
+            hasInputProc, inputProc, hasOutputProc, outputProc, duplicatesInOrder);
     }
 
     // ── MERGE ────────────────────────────────────────────────────
@@ -1231,6 +1384,95 @@ public final class Parser {
         String file = current().value(); advance();
         consumeStatementEnd();
         return new Statement.Delete(file);
+    }
+
+    /**
+     * Parse XML GENERATE/PARSE or JSON GENERATE/PARSE.
+     * Grammar:
+     *   XML GENERATE target FROM record [COUNT IN counter] END-XML
+     *   XML PARSE source INTO record END-XML
+     *   JSON GENERATE target FROM record [COUNT IN counter] END-JSON
+     *   JSON PARSE source INTO record END-JSON
+     */
+    private Statement parseXmlJsonVerb(String format) {
+        advance(); // consume XML or JSON
+        String action = current().value(); advance(); // GENERATE or PARSE
+
+        if (action.equalsIgnoreCase("GENERATE")) {
+            String target = current().value(); advance();
+            expect("FROM");
+            String record = current().value(); advance();
+            // Skip optional COUNT IN, NAME, TYPE, SUPPRESS, etc.
+            while (!atEnd() && !atPeriod()
+                   && !peek("END-XML") && !peek("END-JSON")
+                   && !isVerb(current().value())) {
+                advance();
+            }
+            matchWord("END-XML"); matchWord("END-JSON");
+            consumeStatementEnd();
+            return new Statement.CodecVerb(format, "GENERATE", record, target);
+        } else if (action.equalsIgnoreCase("PARSE")) {
+            String source = current().value(); advance();
+            String record = null;
+            if (matchWord("INTO")) {
+                record = current().value(); advance();
+            }
+            while (!atEnd() && !atPeriod()
+                   && !peek("END-XML") && !peek("END-JSON")
+                   && !isVerb(current().value())) {
+                advance();
+            }
+            matchWord("END-XML"); matchWord("END-JSON");
+            consumeStatementEnd();
+            return new Statement.CodecVerb(format, "PARSE", record, source);
+        }
+
+        // Unknown action
+        diag.warning("parser", current().line(), format,
+            "Unknown " + format + " action: " + action);
+        skipToSyncPoint();
+        return null;
+    }
+
+    /**
+     * Parse INVOKE — OO COBOL method call.
+     * Grammar:
+     *   INVOKE object "method" [USING arg ...] [RETURNING result]
+     *   INVOKE className "new" [USING arg ...] RETURNING newObject
+     */
+    private Statement parseInvoke() {
+        advance(); // consume INVOKE
+        String object = current().value(); advance(); // object or class name
+
+        // Method name is a string literal
+        String method;
+        if (current().type() == Token.Type.STRING) {
+            method = current().value();
+            advance();
+        } else {
+            method = current().value();
+            advance();
+        }
+
+        // Parse USING arguments
+        List<String> args = new ArrayList<>();
+        if (matchWord("USING")) {
+            while (!atEnd() && !atPeriod() && !peek("RETURNING")
+                   && !isVerb(current().value())
+                   && !isScopeTerminator(current().value())) {
+                args.add(readOperand());
+            }
+        }
+
+        // Parse RETURNING
+        String returning = null;
+        if (matchWord("RETURNING")) {
+            returning = current().value();
+            advance();
+        }
+
+        consumeStatementEnd();
+        return new Statement.Invoke(object, method, args, returning);
     }
 
     private Statement parseExecSql() {
@@ -1652,6 +1894,16 @@ public final class Parser {
         return idx < tokens.size() && tokens.get(idx).is(word);
     }
 
+    /**
+     * Detect "NOT ON EXCEPTION" or "NOT ON SIZE ERROR" or "NOT AT END" as a two/three-token
+     * lookahead. This prevents tokens like NOT from being consumed as display items or
+     * field targets when they're actually the start of an exception/error phrase.
+     */
+    private boolean isExceptionPhrase() {
+        if (peek("NOT") && (peek(1, "ON") || peek(1, "AT"))) return true;
+        return false;
+    }
+
     private boolean matchWord(String word) {
         if (current().is(word)) { advance(); return true; }
         // Also check token type for symbolic tokens
@@ -1726,7 +1978,8 @@ public final class Parser {
                  "OPEN", "CLOSE", "READ", "WRITE", "REWRITE", "DELETE",
                  "GO", "STOP", "SET", "INITIALIZE", "INSPECT",
                  "STRING", "UNSTRING", "SEARCH", "SORT", "MERGE",
-                 "CALL", "EXIT", "EXEC", "CONTINUE" -> true;
+                 "CALL", "INVOKE", "EXIT", "EXEC", "CONTINUE",
+                 "XML", "JSON" -> true;
             default -> false;
         };
     }
