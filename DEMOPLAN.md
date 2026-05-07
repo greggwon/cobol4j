@@ -127,12 +127,12 @@ CREATE TABLE SHIPMENTS (
 ### Per-supplier ({SUPPLIER-ID}.rpt)
 ```
 ============================================================
-**SUPPLIER SHIPMENT REPORT**                    **DATE**: 2026-05-06
-**SUPPLIER**: SA   ACME WIDGETS
-**LAST SHIPMENT**: 2026-04-05
+SUPPLIER SHIPMENT REPORT                    DATE: 2026-05-06
+SUPPLIER: SA   ACME WIDGETS
+LAST SHIPMENT: 2026-04-05
 ============================================================
-**ITEMS SHIPPED**: 00003        **TOTAL QTY**:     0000350
-**TOTAL VALUE**:   $   3,087.50
+ITEMS SHIPPED: 00003        TOTAL QTY:     0000350
+TOTAL VALUE:   $   3,087.50
 ============================================================
 ```
 ### Consolidated (ALL-SUPPLIERS.rpt)
