@@ -8,7 +8,7 @@
 > contributions. If you'd like to help — whether fixing a bug, finishing an
 > incomplete feature, improving documentation, or adding something new — please
 > fork the repository and submit a pull request. See the
-> [remaining work](#whats-implemented-whats-next) section below for known areas
+> [remaining work](WHATSLEFT.md) section below for known areas
 > that could use attention.
 
 A fluent Java library that implements COBOL's runtime semantics — data layout, MOVE
@@ -826,37 +826,8 @@ Zero external production dependencies.
 
 ## Status
 
-**444 passing tests** across 104 source files (~27,700 lines).
-
-Implemented:
-- Full COBOL runtime: Record, Decimal, Field, Variable, Program, all COBOL verbs
-- Transpiler: recursive descent parser with Expression AST, proper precedence, error recovery
-- COPY/REPLACE preprocessor with copybook resolution
-- EXEC SQL host variable parsing (`:HOST-VAR` → `?` with auto-binding)
-- Runner: transpile, compile, and execute COBOL programs directly
-- SQL: SELECT INTO, cursors, DML, SqlSession, ConnectionFactory.jdbc().cached()
-- Schema management: auto-migration with version tracking
-- Interop: EBCDIC codec (CP037/CP500/CP1047), copybook importer, mainframe file I/O
-- CICS: transaction container with hot-deploy via ServiceLoader
-- Messaging: MessagePort with fire-and-forget/at-least-once/exactly-once delivery
-- Codecs: JSON/XML generate/parse, ServiceLoader plugin system
-- SystemCall: POSIX function mapping for transpiled CALL statements
-- OO COBOL: INVOKE verb → Java method calls
-- FILE SECTION / FD with file-record binding
-- EVALUATE WHEN THRU ranges and fall-through
-- AND/OR compound conditions with proper precedence
-- SIGN IS LEADING/TRAILING/SEPARATE
-- PIC N (NATIONAL/Unicode)
-- GLOBAL/EXTERNAL, POINTER/FUNCTION-POINTER
-- ACCEPT FROM DATE/TIME/DAY
-- ON EXCEPTION / NOT ON EXCEPTION
-- STRING/UNSTRING WITH POINTER and TALLYING
-- ADD/SUBTRACT CORRESPONDING
-
-Remaining:
-- Report Writer (REPORT SECTION — declarative report generation)
-- Screen Section (terminal UI)
-- USE AFTER EXCEPTION (Declaratives)
+**499 passing tests.** See [WHATSLEFT.md](WHATSLEFT.md) for the full list of
+remaining work and known gaps.
 
 ## Contributing
 
@@ -870,7 +841,7 @@ help is welcome:
 - Documentation improvements and tutorials
 
 See [EXAMPLES.md](EXAMPLES.md) for the full test inventory and
-[the remaining work section](#whats-implemented-whats-next) for specific items.
+[the remaining work section](WHATSLEFT.md) for specific items.
 
 ## License
 
