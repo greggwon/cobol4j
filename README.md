@@ -1,5 +1,16 @@
 # cobol4j — COBOL Runtime Semantics as a Java DSL
 
+> **Project Status — Open for Contributions**
+>
+> The initial design and implementation phase is complete. The runtime library,
+> transpiler, CICS container, SQL integration, and mainframe interop layer are
+> all functional with 499 passing tests. The project is now open for community
+> contributions. If you'd like to help — whether fixing a bug, finishing an
+> incomplete feature, improving documentation, or adding something new — please
+> fork the repository and submit a pull request. See the
+> [remaining work](#whats-implemented-whats-next) section below for known areas
+> that could use attention.
+
 A fluent Java library that implements COBOL's runtime semantics — data layout, MOVE
 rules, decimal arithmetic, file I/O, program structure, and SQL — so that a
 COBOL-to-Java transpiler can emit clean, maintainable code instead of verbose literal
@@ -10,18 +21,26 @@ calls against a runtime that already understands COBOL semantics.** The transpil
 becomes a thin syntax-directed translator. All the hard behavioral correctness lives
 in one testable, versioned library.
 
-See [DESIGN.md](DESIGN.md) for the details.
+See [DESIGN.md](DESIGN.md) for the architecture philosophy.
 
-# Building and Using cobol4j
+## Getting Started
 
-This software is built using maven.  There is a Makefile in the top level directory 
-that will build the java source files, run tests and package everything into a fat
-jar a thin jar and install to ~/.md.  Have a look at the Makefile for the details
-of each of the targets.
+```bash
+git clone https://github.com/greggwon/cobol4j.git
+cd cobol4j
+make test        # build and run all 499 tests
+make javadoc     # generate API docs into docs/javadoc/
+```
 
-# All the Details...
-The following sections detail all the attributes of the system and what you can expect.
-Please have a look, and you can discover what's really here for use.
+For examples, demos, and a complete map of what's here, see
+**[EXAMPLES.md](EXAMPLES.md)** — it covers the supplier shipment demo (batch and
+CICS), the CUSTORD transpiler end-to-end test, every feature-specific test, and
+links to the generated javadoc.
+
+## All the Details
+
+The following sections detail the attributes of the system and what you can expect.
+Have a look, and discover what's here for use.
 
 ## Why No BigDecimal, No float, No double
 
@@ -838,6 +857,20 @@ Remaining:
 - Report Writer (REPORT SECTION — declarative report generation)
 - Screen Section (terminal UI)
 - USE AFTER EXCEPTION (Declaratives)
+
+## Contributing
+
+Fork the repository, make your changes, and submit a pull request. Areas where
+help is welcome:
+
+- Implementing missing COBOL verbs (START, RENAMES/66-level, PERFORM VARYING AFTER)
+- Improving the transpiler's coverage of real-world COBOL programs
+- Adding end-to-end examples with new COBOL source files
+- Database dialect testing (PostgreSQL, MySQL, Oracle)
+- Documentation improvements and tutorials
+
+See [EXAMPLES.md](EXAMPLES.md) for the full test inventory and
+[the remaining work section](#whats-implemented-whats-next) for specific items.
 
 ## License
 
