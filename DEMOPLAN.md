@@ -1,10 +1,10 @@
-# Create a complete, multi-program demo
+# Create a Complete, Multi Program Demo
 Create a realistic multi-program COBOL demonstration showing how transpiled programs interoperate: receiving shipment records, storing in
 SQLite, notifying a report writer, querying data, and generating reports. This educates users on COBOL-style inter-program communication
 using the cobol4j API.
 
+---
 ## Architecture
-
 Three programs communicating via CALL USING, MessagePort, and shared SQLite:
 ```
 Shipment Data ──▶ SHIPINTK ──▶ SQLite DB
@@ -15,6 +15,7 @@ Shipment Data ──▶ SHIPINTK ──▶ SQLite DB
 	     │
 	Report Files
 ```
+---
 ### Program 1: SHIPINTK (Shipment Intake)
 
 - Receives shipment record fields via CALL USING / LINKAGE
@@ -37,49 +38,50 @@ Shipment Data ──▶ SHIPINTK ──▶ SQLite DB
 - For each supplier: CALLs SHIPQRY, writes {SUPPLIER-ID}.rpt
 - Writes consolidated ALL-SUPPLIERS.rpt with grand totals
 
+---
 ## Record Layouts
-
 ### WS-SHIPMENT-REC (76 bytes)
-
->05 WS-SUPPLIER-ID       PIC X(4)
->05 WS-SUPPLIER-NAME     PIC X(20)
->05 WS-ITEM-DESC         PIC X(30)
->05 WS-SHIP-QTY          PIC 9(5)
->05 WS-UNIT-PRICE        PIC S9(5)V99
->05 WS-SHIP-DATE         PIC X(10)         ← "2026-04-15" format
-
+```
+05 WS-SUPPLIER-ID       PIC X(4)
+05 WS-SUPPLIER-NAME     PIC X(20)
+05 WS-ITEM-DESC         PIC X(30)
+05 WS-SHIP-QTY          PIC 9(5)
+05 WS-UNIT-PRICE        PIC S9(5)V99
+05 WS-SHIP-DATE         PIC X(10)         ← "2026-04-15" format
+```
 ### WS-INTAKE-STATUS
-
->05 WS-STATUS-CODE       PIC XX
->>88 INTAKE-OK         VALUE "00"
->>88 INTAKE-INVALID    VALUE "10"
->>88 INTAKE-DB-ERROR   VALUE "20"
->05 WS-STATUS-MSG        PIC X(40)
-
+```
+05 WS-STATUS-CODE       PIC XX
+   88 INTAKE-OK         VALUE "00"
+   88 INTAKE-INVALID    VALUE "10"
+88 INTAKE-DB-ERROR   VALUE "20"
+05 WS-STATUS-MSG        PIC X(40)
+```
 ### WS-NOTIFICATION (5 bytes — MessagePort payload)
-
->05 WS-NOTIFY-TYPE       PIC X              ← "U"=updated, "E"=end
->05 WS-NOTIFY-SUPPLIER   PIC X(4)
-
+```
+05 WS-NOTIFY-TYPE       PIC X              ← "U"=updated, "E"=end
+05 WS-NOTIFY-SUPPLIER   PIC X(4)
+```
 ### WS-QUERY-RESULT (SHIPQRY linkage output)
-
->05 WS-QR-SUPPLIER-NAME  PIC X(20)
->05 WS-QR-ITEM-COUNT     PIC 9(5)
->05 WS-QR-TOTAL-QTY      PIC 9(7)
->05 WS-QR-TOTAL-VALUE    PIC S9(9)V99
->05 WS-QR-LATEST-DATE    PIC X(10)          ← most recent shipment date
-
+```
+05 WS-QR-SUPPLIER-NAME  PIC X(20)
+05 WS-QR-ITEM-COUNT     PIC 9(5)
+05 WS-QR-TOTAL-QTY      PIC 9(7)
+05 WS-QR-TOTAL-VALUE    PIC S9(9)V99
+05 WS-QR-LATEST-DATE    PIC X(10)          ← most recent shipment date
+```
+---
 ## SQLite Schema
-
->CREATE TABLE SHIPMENTS (
->	SUPPLIER_ID   VARCHAR(4)   NOT NULL,
->	SUPPLIER_NAME VARCHAR(20)  NOT NULL,
->	ITEM_DESC     VARCHAR(30)  NOT NULL,
->	SHIP_QTY      INTEGER      NOT NULL,
->	UNIT_PRICE    DECIMAL(7,2) NOT NULL,
->	SHIP_DATE     VARCHAR(10)  NOT NULL
->)
-
+```
+CREATE TABLE SHIPMENTS (
+	SUPPLIER_ID   VARCHAR(4)   NOT NULL,
+	SUPPLIER_NAME VARCHAR(20)  NOT NULL,
+	ITEM_DESC     VARCHAR(30)  NOT NULL,
+	SHIP_QTY      INTEGER      NOT NULL,
+	UNIT_PRICE    DECIMAL(7,2) NOT NULL,
+	SHIP_DATE     VARCHAR(10)  NOT NULL
+)
+```
 ## Test Data (13 shipments, 4 suppliers)
 
 ```
