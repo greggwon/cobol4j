@@ -46,7 +46,7 @@ import java.sql.Connection;
  * Built-in implementations:
  * <ul>
  *   <li>{@link #simple(String, String, String)} — DriverManager, no pooling</li>
- *   <li>{@link #dataSource(javax.sql.DataSource)} — delegates to a DataSource (use with HikariCP, etc.)</li>
+ *   <li>{@code jdbc(DataSource)} — delegates to a DataSource (use with HikariCP, etc.)</li>
  *   <li>{@link #cached(ConnectionFactory, int)} — simple internal pool</li>
  * </ul>
  */
