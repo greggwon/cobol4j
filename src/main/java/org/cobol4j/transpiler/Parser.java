@@ -516,13 +516,25 @@ public final class Parser {
             case "XML"        -> parseXmlJsonVerb("XML");
             case "JSON"       -> parseXmlJsonVerb("JSON");
 
+            // ── Implemented as synonyms ────────────────────────────
+            case "GOBACK"     -> { advance(); consumeStatementEnd(); yield new Statement.StopRun(); }
+
+            // ── Known but not yet fully implemented ────────────────
+            case "START"      -> parseUnsupported("START",
+                "Keyed file positioning. Use CobolFile API: file.start(mode, key)");
+            case "ALTER"      -> parseUnsupported("ALTER",
+                "Modify GO TO target at runtime. Refactor to use IF/EVALUATE instead");
+            case "CANCEL"     -> parseUnsupported("CANCEL",
+                "Release called program. In Java, this is managed by the classloader");
+
             // ── Truly unknown ───────────────────────────────────────
             default -> {
-                diag.error("parser", t.line(), t.value(),
-                    "Unrecognized verb '" + t.value() + "' — not a known COBOL "
-                    + "statement. Check spelling or dialect-specific extensions.");
-                skipToSyncPoint();
-                yield null;
+                String rawCobol = captureToSyncPoint(t);
+                diag.warning("parser", t.line(), t.value(),
+                    "Unrecognized verb '" + t.value()
+                    + "' — a COBOL4J_UNSUPPORTED marker will be generated");
+                yield new Statement.Unsupported(t.value(), rawCobol, t.line(),
+                    "Unknown COBOL verb. Check spelling or dialect-specific extensions");
             }
         };
     }
@@ -545,8 +557,7 @@ public final class Parser {
                && !isExceptionPhrase()
                && !isVerb(current().value())
                && !isScopeTerminator(current().value())) {
-            targets.add(current().value());
-            advance();
+            targets.add(readOperand()); // handles FIELD(subscript) and FIELD(pos:len)
         }
         consumeStatementEnd();
         return new Statement.Move(source, targets);
@@ -569,11 +580,11 @@ public final class Parser {
                 targets.add(readOperand());
             }
         }
-        if (matchWord("GIVING")) { giving = readOperand(); }
+        List<String> givingTargets = parseGivingTargets();
         if (matchWord("ROUNDED")) rounded = true;
         var onSize = parseSizeError();
         consumeStatementEnd();
-        return new Statement.Add(sources, targets, giving, rounded, onSize.get(0), onSize.get(1));
+        return new Statement.Add(sources, targets, givingTargets, rounded, onSize.get(0), onSize.get(1));
     }
 
     private Statement parseSubtract() {
@@ -590,13 +601,12 @@ public final class Parser {
                && !isScopeTerminator(current().value())) {
             targets.add(readOperand());
         }
-        String giving = null;
         boolean rounded = false;
-        if (matchWord("GIVING")) { giving = readOperand(); }
+        List<String> givingTargets = parseGivingTargets();
         if (matchWord("ROUNDED")) rounded = true;
         var onSize = parseSizeError();
         consumeStatementEnd();
-        return new Statement.Subtract(subtrahends, targets, giving, rounded, onSize.get(0), onSize.get(1));
+        return new Statement.Subtract(subtrahends, targets, givingTargets, rounded, onSize.get(0), onSize.get(1));
     }
 
     private Statement parseMultiply() {
@@ -604,13 +614,12 @@ public final class Parser {
         Expr a = parseExpr();
         expect("BY");
         Expr by = parseExpr();
-        String giving = null;
         boolean rounded = false;
-        if (matchWord("GIVING")) { giving = readOperand(); }
+        List<String> givingTargets = parseGivingTargets();
         if (matchWord("ROUNDED")) rounded = true;
         var onSize = parseSizeError();
         consumeStatementEnd();
-        return new Statement.Multiply(a, by, giving, rounded, onSize.get(0), onSize.get(1));
+        return new Statement.Multiply(a, by, givingTargets, rounded, onSize.get(0), onSize.get(1));
     }
 
     private Statement parseDivide() {
@@ -622,14 +631,27 @@ public final class Parser {
         if (divisorWord.equalsIgnoreCase("INTO")) {
             Expr temp = dividend; dividend = divisor; divisor = temp;
         }
-        String giving = null, remainder = null;
+        String remainder = null;
         boolean rounded = false;
-        if (matchWord("GIVING")) { giving = readOperand(); }
+        List<String> givingTargets = parseGivingTargets();
         if (matchWord("REMAINDER")) { remainder = readOperand(); }
         if (matchWord("ROUNDED")) rounded = true;
         var onSize = parseSizeError();
         consumeStatementEnd();
-        return new Statement.Divide(dividend, divisor, giving, remainder, rounded, onSize.get(0), onSize.get(1));
+        return new Statement.Divide(dividend, divisor, givingTargets, remainder, rounded, onSize.get(0), onSize.get(1));
+    }
+
+    /** Parse GIVING target1 [target2 ...] — returns empty list if no GIVING. */
+    private List<String> parseGivingTargets() {
+        if (!matchWord("GIVING")) return List.of();
+        List<String> targets = new ArrayList<>();
+        while (!atEnd() && !atPeriod() && !peek("ROUNDED") && !peek("REMAINDER")
+               && !peek("ON") && !peek("NOT")
+               && !isVerb(current().value())
+               && !isScopeTerminator(current().value())) {
+            targets.add(readOperand());
+        }
+        return targets;
     }
 
     private Statement parseCompute() {
@@ -971,6 +993,16 @@ public final class Parser {
     private Statement parseSet() {
         advance(); // consume SET
         String name = current().value(); advance();
+
+        // SET index-name UP BY / DOWN BY value
+        if (peek("UP") || peek("DOWN")) {
+            String direction = current().value(); advance(); // UP or DOWN
+            expect("BY");
+            Expr value = parseExpr();
+            consumeStatementEnd();
+            return new Statement.SetIndex(name, direction, value);
+        }
+
         expect("TO");
         advance(); // consume TRUE or value
         consumeStatementEnd();
@@ -989,6 +1021,10 @@ public final class Parser {
         if (matchWord("PARAGRAPH")) {
             consumeStatementEnd();
             return new Statement.ExitParagraph();
+        }
+        if (matchWord("PROGRAM")) {
+            consumeStatementEnd();
+            return new Statement.StopRun(); // EXIT PROGRAM = return from subprogram
         }
         consumeStatementEnd();
         return null; // EXIT alone = no-op
@@ -1962,6 +1998,28 @@ public final class Parser {
         }
     }
 
+    /** Parse a known-but-unsupported verb into an Unsupported AST node. */
+    private Statement parseUnsupported(String verb, String hint) {
+        int line = current().line();
+        String rawCobol = captureToSyncPoint(current());
+        diag.warning("parser", line, verb,
+            verb + " verb not yet implemented — a placeholder will be generated");
+        return new Statement.Unsupported(verb, rawCobol, line, hint);
+    }
+
+    /** Capture tokens from current position to the next sync point as raw text. */
+    private String captureToSyncPoint(Token start) {
+        StringBuilder sb = new StringBuilder(start.value());
+        if (!atEnd()) advance(); // move past the verb
+        while (!atEnd()) {
+            if (atPeriod()) { advance(); break; }
+            if (current().type() == Token.Type.WORD && isVerb(current().value())) break;
+            sb.append(" ").append(current().value());
+            advance();
+        }
+        return sb.toString();
+    }
+
     private void skipDivision() {
         // Skip until next DIVISION keyword
         expect("DIVISION");
@@ -1979,7 +2037,8 @@ public final class Parser {
                  "GO", "STOP", "SET", "INITIALIZE", "INSPECT",
                  "STRING", "UNSTRING", "SEARCH", "SORT", "MERGE",
                  "CALL", "INVOKE", "EXIT", "EXEC", "CONTINUE",
-                 "XML", "JSON" -> true;
+                 "XML", "JSON",
+                 "GOBACK", "START", "ALTER", "CANCEL" -> true;
             default -> false;
         };
     }

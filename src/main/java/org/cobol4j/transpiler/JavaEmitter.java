@@ -18,8 +18,11 @@
  */
 package org.cobol4j.transpiler;
 
+import org.cobol4j.Pic;
+
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Generates Java source code from a parsed {@link CobolProgram} AST.
@@ -35,11 +38,49 @@ public final class JavaEmitter {
     private int indent = 0;
     private final String className;
     private final TranspileDiagnostics diag;
+    private final Map<String, FieldInfo> symbolTable;
+
+    /** Type information for a field, built from DATA DIVISION. */
+    private record FieldInfo(String name, String recordName, boolean numeric,
+                              boolean isGroup, boolean isCondition) {}
 
     private JavaEmitter(CobolProgram program, TranspileDiagnostics diag) {
         this.program = program;
         this.className = toJavaClassName(program.programId());
         this.diag = diag;
+        this.symbolTable = buildSymbolTable();
+    }
+
+    /** Build a symbol table from all DATA DIVISION entries. */
+    private Map<String, FieldInfo> buildSymbolTable() {
+        Map<String, FieldInfo> table = new java.util.LinkedHashMap<>();
+        List<RecordGroup> groups = groupByLevel01();
+        for (RecordGroup g : groups) {
+            String recName = g.name;
+            // The 01-level itself
+            table.put(recName, new FieldInfo(recName, recName, false, true, false));
+            for (CobolProgram.DataEntry e : g.children) {
+                boolean isNumeric = false;
+                boolean isGroup = (e.pic() == null && !isPointerUsage(e));
+                if (e.pic() != null) {
+                    Pic pic = Pic.parse(e.pic());
+                    isNumeric = pic.isNumeric();
+                }
+                table.put(e.name(), new FieldInfo(e.name(), recName, isNumeric, isGroup, false));
+                // Register condition names
+                for (CobolProgram.Condition88 cond : e.conditions()) {
+                    table.put(cond.name(), new FieldInfo(cond.name(), recName, false, false, true));
+                }
+            }
+        }
+        return table;
+    }
+
+    /** Look up whether a field is numeric. */
+    private boolean isNumericField(String fieldName) {
+        String name = fieldName.contains("(") ? fieldName.substring(0, fieldName.indexOf('(')) : fieldName;
+        FieldInfo info = symbolTable.get(name);
+        return info != null && info.numeric;
     }
 
     /** Generate Java source from a parsed COBOL program. */
@@ -160,30 +201,76 @@ public final class JavaEmitter {
         line("private final Record " + recVar + " = Record.define(\"" + group.name + "\")");
         indent++;
 
-        for (CobolProgram.DataEntry entry : group.children) {
-            emitDataEntry(entry);
-        }
+        emitDataEntries(group.children, 0, group.children.size());
 
         line(".build();");
         indent--;
         line("");
     }
 
-    private void emitDataEntry(CobolProgram.DataEntry entry) {
-        if (entry.level() == 88) return; // handled inline with parent
+    /**
+     * Emit a range of data entries, respecting group nesting.
+     * When a group item is encountered (pic == null, not level-88),
+     * its children (entries with higher level numbers) are emitted
+     * inside a .group() lambda.
+     */
+    private void emitDataEntries(List<CobolProgram.DataEntry> entries, int start, int end) {
+        int i = start;
+        while (i < end) {
+            CobolProgram.DataEntry entry = entries.get(i);
+            if (entry.level() == 88) { i++; continue; } // handled inline
 
-        if (entry.pic() == null && entry.usage() != null
-            && (entry.usage().equals("POINTER") || entry.usage().equals("FUNCTION-POINTER"))) {
-            // POINTER / FUNCTION-POINTER without PIC — emit as alphanumeric field for program name storage
+            if (entry.pic() == null && !isPointerUsage(entry)) {
+                // Group item — find its children (entries with higher level number)
+                int groupLevel = entry.level();
+                int childStart = i + 1;
+                int childEnd = childStart;
+                while (childEnd < end && entries.get(childEnd).level() > groupLevel) {
+                    childEnd++;
+                }
+
+                if (entry.redefines() != null) {
+                    // REDEFINES — overlay on existing field
+                    line(".redefines(\"" + entry.redefines() + "\", \"" + entry.name() + "\", g -> g");
+                    indent++;
+                    emitDataEntries(entries, childStart, childEnd);
+                    indent--;
+                    line(")");
+                } else {
+                    // Regular group
+                    line(".group(\"" + entry.name() + "\", g -> g");
+                    indent++;
+                    emitDataEntries(entries, childStart, childEnd);
+                    indent--;
+                    line(")");
+                }
+                if (entry.occurs() > 0) {
+                    line(".occurs(" + entry.occurs() + ")");
+                }
+
+                i = childEnd;
+            } else {
+                emitElementaryEntry(entry);
+                i++;
+            }
+        }
+    }
+
+    private boolean isPointerUsage(CobolProgram.DataEntry entry) {
+        return entry.usage() != null
+            && (entry.usage().equals("POINTER") || entry.usage().equals("FUNCTION-POINTER"));
+    }
+
+    private void emitElementaryEntry(CobolProgram.DataEntry entry) {
+        if (isPointerUsage(entry) && entry.pic() == null) {
             line(".pic(\"" + entry.name() + "\", \"X(256)\") // " + entry.usage());
             return;
         }
 
         if (entry.pic() == null) {
-            // Group item — we flatten for now (groups need lambda syntax)
-            // For simplicity, emit as a comment
-            line("// GROUP: " + entry.name() + " (level " + entry.level() + ")");
-            return;
+            // Should not happen — groups are handled above
+            throw new Transpiler.TranspileException(
+                "Elementary entry '" + entry.name() + "' has no PIC clause");
         }
 
         StringBuilder sb = new StringBuilder();
@@ -204,7 +291,6 @@ public final class JavaEmitter {
                 case "LEADING" -> sb.append(".signLeading()");
                 case "TRAILING_SEPARATE" -> sb.append(".signTrailingSeparate()");
                 case "LEADING_SEPARATE" -> sb.append(".signLeadingSeparate()");
-                // TRAILING is the default, no call needed
             }
         }
 
@@ -330,14 +416,57 @@ public final class JavaEmitter {
         else if (stmt instanceof Statement.Rewrite rw) line("ctx.rewrite(" + toJavaFieldName(rw.recordName()) + ", " + recRef(rw.recordName()) + ");");
         else if (stmt instanceof Statement.Delete dl) line("ctx.delete(" + toJavaFieldName(dl.fileName()) + ");");
         else if (stmt instanceof Statement.Continue c) line("// CONTINUE");
+        else if (stmt instanceof Statement.SetIndex si) emitSetIndex(si);
+        else if (stmt instanceof Statement.Unsupported u) emitUnsupported(u);
         // WhenClause, CallParam, StringSource, SearchWhen, SortKey handled within parent
+    }
+
+    private void emitSetIndex(Statement.SetIndex si) {
+        String rec = recRef(si.indexName());
+        String val = emitExpr(si.value());
+        if (si.direction().equalsIgnoreCase("UP")) {
+            line(rec + ".add(\"" + si.indexName() + "\", " + val + ");");
+        } else {
+            line(rec + ".subtract(\"" + si.indexName() + "\", " + val + ");");
+        }
+    }
+
+    private void emitUnsupported(Statement.Unsupported u) {
+        line("// COBOL line " + u.line() + ": " + u.rawCobol());
+        line("// " + u.hint());
+        line("COBOL4J_UNSUPPORTED_" + u.verb() + "; // " + u.rawCobol());
     }
 
     private void emitMove(Statement.Move m) {
         for (String target : m.targets()) {
             String val = emitExpr(m.source());
-            line(recRef(target) + ".move(\"" + target + "\", " + val + ");");
+            if (target.contains("(") && target.contains(")")) {
+                // Subscripted or ref-mod target
+                String fieldName = target.substring(0, target.indexOf('('));
+                String inside = target.substring(target.indexOf('(') + 1, target.indexOf(')'));
+                if (inside.contains(":")) {
+                    // MOVE value TO FIELD(pos:len) — reference modification on target
+                    String[] parts = inside.split(":");
+                    line(recRef(fieldName) + ".moveSubstring(\"" + fieldName + "\", "
+                        + parts[0] + ", " + parts[1] + ", " + val + ");");
+                } else {
+                    // MOVE value TO FIELD(idx) — subscript, 1-based to 0-based
+                    String idx = emitSubscriptString(inside);
+                    line(recRef(fieldName) + ".move(\"" + fieldName + "\", " + idx + ", " + val + ");");
+                }
+            } else {
+                line(recRef(target) + ".move(\"" + target + "\", " + val + ");");
+            }
         }
+    }
+
+    /** Convert a subscript string (from readOperand) to a 0-based int expression. */
+    private String emitSubscriptString(String sub) {
+        if (sub.matches("\\d+")) {
+            return String.valueOf(Integer.parseInt(sub) - 1);
+        }
+        // Field reference as subscript
+        return "(int) " + recRef(sub) + ".getLong(\"" + sub + "\") - 1";
     }
 
     private void emitMoveCorr(Statement.MoveCorresponding m) {
@@ -345,46 +474,85 @@ public final class JavaEmitter {
     }
 
     private void emitAdd(Statement.Add a) {
-        String value = emitExpr(a.sources().get(0));
+        // Sum all sources into one expression
+        String sourceSum = emitSourceSum(a.sources());
 
-        if (a.giving() != null) {
-            String firstTarget = a.targets().isEmpty() ? "0" : a.targets().get(0);
-            line("Arithmetic.add(" + value + ", " + fieldGet(firstTarget) + ")");
-            line("    .giving(" + recRef(a.giving()) + ".field(\"" + a.giving() + "\"))");
-            if (a.rounded()) line("    .rounded()");
-            line("    .execute();");
+        if (!a.givingTargets().isEmpty()) {
+            // ADD source1 [source2 ...] GIVING target1 [target2 ...]
+            // Each target = source1 + source2 + ...
+            String handler = emitSizeErrorHandler(a.onSizeError(), a.notOnSizeError());
+            for (String giving : a.givingTargets()) {
+                if (a.sources().size() == 2) {
+                    line("Arithmetic.add(" + emitExpr(a.sources().get(0)) + ", " + emitExpr(a.sources().get(1)) + ")");
+                } else {
+                    line("Arithmetic.add(" + sourceSum + ", Decimal.of(\"0\"))");
+                }
+                line("    .giving(" + recRef(giving) + ".field(\"" + giving + "\"))");
+                if (a.rounded()) line("    .rounded()");
+                if (!handler.isEmpty()) line("    .onSizeError(" + handler + ")");
+                line("    .execute();");
+            }
         } else {
-            // ADD value TO target1 target2 target3 — each target gets the value added
+            // ADD source1 [source2 ...] TO target1 target2 ...
+            // each target += sum of all sources
             String handler = emitSizeErrorHandler(a.onSizeError(), a.notOnSizeError());
             for (String target : a.targets()) {
-                line(recRef(target) + ".add(\"" + target + "\", " + value
+                line(recRef(target) + ".add(\"" + target + "\", " + sourceSum
                     + (handler.isEmpty() ? "" : ", " + handler) + ");");
             }
         }
     }
 
     private void emitSubtract(Statement.Subtract s) {
-        String value = emitExpr(s.subtrahends().get(0));
-        if (s.giving() != null) {
-            String firstTarget = s.targets().isEmpty() ? "0" : s.targets().get(0);
-            line("Arithmetic.subtract(" + value + ", " + fieldGet(firstTarget) + ")");
-            line("    .giving(" + recRef(s.giving()) + ".field(\"" + s.giving() + "\"))");
-            if (s.rounded()) line("    .rounded()");
-            line("    .execute();");
+        // Sum all subtrahends — SUBTRACT a b FROM c means c = c - (a + b)
+        String subSum = emitSourceSum(s.subtrahends());
+
+        if (!s.givingTargets().isEmpty()) {
+            // SUBTRACT sub1 [sub2 ...] FROM minuend GIVING target1 [target2 ...]
+            // Each target = minuend - (sub1 + sub2 + ...)
+            String minuend = s.targets().isEmpty()
+                ? "Decimal.of(\"0\")"
+                : fieldGet(s.targets().get(0));
+            String handler = emitSizeErrorHandler(s.onSizeError(), s.notOnSizeError());
+            for (String giving : s.givingTargets()) {
+                line("Arithmetic.subtract(" + subSum + ", " + minuend + ")");
+                line("    .giving(" + recRef(giving) + ".field(\"" + giving + "\"))");
+                if (s.rounded()) line("    .rounded()");
+                if (!handler.isEmpty()) line("    .onSizeError(" + handler + ")");
+                line("    .execute();");
+            }
         } else {
-            // SUBTRACT value FROM target1 target2 target3
+            // SUBTRACT sub1 [sub2 ...] FROM target1 target2 ...
+            // each target -= sum of all subtrahends
+            String handler = emitSizeErrorHandler(s.onSizeError(), s.notOnSizeError());
             for (String target : s.targets()) {
-                line(recRef(target) + ".subtract(\"" + target + "\", " + value + ");");
+                line(recRef(target) + ".subtract(\"" + target + "\", " + subSum
+                    + (handler.isEmpty() ? "" : ", " + handler) + ");");
             }
         }
     }
 
+    /** Fold a list of Expr sources into a single sum expression. */
+    private String emitSourceSum(List<Expr> sources) {
+        if (sources.size() == 1) return emitExpr(sources.get(0));
+        // Chain: source1.add(source2).add(source3)...
+        StringBuilder sb = new StringBuilder(emitExpr(sources.get(0)));
+        for (int i = 1; i < sources.size(); i++) {
+            sb.append(".add(").append(emitExpr(sources.get(i))).append(")");
+        }
+        return sb.toString();
+    }
+
     private void emitMultiply(Statement.Multiply m) {
-        if (m.giving() != null) {
-            line("Arithmetic.multiply(" + emitExpr(m.a()) + ", " + emitExpr(m.by()) + ")");
-            line("    .giving(" + recRef(m.giving()) + ".field(\"" + m.giving() + "\"))");
-            if (m.rounded()) line("    .rounded()");
-            line("    .execute();");
+        if (!m.givingTargets().isEmpty()) {
+            String handler = emitSizeErrorHandler(m.onSizeError(), m.notOnSizeError());
+            for (String giving : m.givingTargets()) {
+                line("Arithmetic.multiply(" + emitExpr(m.a()) + ", " + emitExpr(m.by()) + ")");
+                line("    .giving(" + recRef(giving) + ".field(\"" + giving + "\"))");
+                if (m.rounded()) line("    .rounded()");
+                if (!handler.isEmpty()) line("    .onSizeError(" + handler + ")");
+                line("    .execute();");
+            }
         } else {
             String byName = (m.by() instanceof Expr.FieldRef fr) ? fr.name() : "RESULT";
             line(recRef(byName) + ".multiply(\"" + byName + "\", " + emitExpr(m.a()) + ");");
@@ -392,14 +560,18 @@ public final class JavaEmitter {
     }
 
     private void emitDivide(Statement.Divide d) {
-        if (d.giving() != null) {
-            line("Arithmetic.divide(" + emitExpr(d.dividend()) + ", " + emitExpr(d.divisor()) + ")");
-            line("    .giving(" + recRef(d.giving()) + ".field(\"" + d.giving() + "\"))");
-            if (d.remainder() != null) {
-                line("    .remainder(" + recRef(d.remainder()) + ".field(\"" + d.remainder() + "\"))");
+        if (!d.givingTargets().isEmpty()) {
+            String handler = emitSizeErrorHandler(d.onSizeError(), d.notOnSizeError());
+            for (String giving : d.givingTargets()) {
+                line("Arithmetic.divide(" + emitExpr(d.dividend()) + ", " + emitExpr(d.divisor()) + ")");
+                line("    .giving(" + recRef(giving) + ".field(\"" + giving + "\"))");
+                if (d.remainder() != null) {
+                    line("    .remainder(" + recRef(d.remainder()) + ".field(\"" + d.remainder() + "\"))");
+                }
+                if (d.rounded()) line("    .rounded()");
+                if (!handler.isEmpty()) line("    .onSizeError(" + handler + ")");
+                line("    .execute();");
             }
-            if (d.rounded()) line("    .rounded()");
-            line("    .execute();");
         } else {
             String dividendName = (d.dividend() instanceof Expr.FieldRef fr) ? fr.name() : "RESULT";
             line(recRef(dividendName) + ".divide(\"" + dividendName + "\", " + emitExpr(d.divisor()) + ");");
@@ -955,11 +1127,17 @@ public final class JavaEmitter {
             line("})");
         }
         for (Statement.SearchWhen w : sr.whenClauses()) {
+            // Strip subscript from condition field — SEARCH provides its own index via idx
+            String condField = w.condition();
+            if (condField.contains("(")) condField = condField.substring(0, condField.indexOf('('));
+
             if (w.conditionRight() != null) {
-                line(".when(idx -> " + rec + ".getString(\"" + w.condition() + "\", idx).trim().equals("
-                    + emitValueExpr(w.conditionRight()) + "), idx -> {");
+                String rightVal = w.conditionRight();
+                if (rightVal.contains("(")) rightVal = rightVal.substring(0, rightVal.indexOf('('));
+                line(".when(idx -> " + rec + ".getString(\"" + condField + "\", idx).trim().equals("
+                    + recRef(rightVal) + ".getString(\"" + rightVal + "\").trim()), idx -> {");
             } else {
-                line(".when(idx -> " + rec + ".is(\"" + w.condition() + "\"), idx -> {");
+                line(".when(idx -> " + rec + ".is(\"" + condField + "\"), idx -> {");
             }
             indent++;
             for (Statement s : w.body()) emitStatement(s);
@@ -1159,21 +1337,23 @@ public final class JavaEmitter {
      * Walk an Expr tree and produce Java source code.
      */
     private String emitExpr(Expr expr) {
-        if (expr == null) return "null";
+        if (expr == null) throw new Transpiler.TranspileException("Null expression in emitter");
         if (expr instanceof Expr.NumericLit n) return "Decimal.of(\"" + n.value() + "\")";
         if (expr instanceof Expr.StringLit s) return "\"" + s.value() + "\"";
         if (expr instanceof Expr.Figurative f) return switch (f.name()) {
-            case "SPACES" -> "\"\"";
+            case "SPACES" -> "\" \"";
             case "ZEROS" -> "Decimal.ZERO";
             case "HIGH-VALUES" -> "\"\\u00FF\"";
             case "LOW-VALUES" -> "\"\\u0000\"";
-            default -> "\"\"";
+            default -> throw new Transpiler.TranspileException(
+                "Unknown figurative constant: " + f.name());
         };
         if (expr instanceof Expr.FunctionCall fc) return emitFunctionCall(fc);
         if (expr instanceof Expr.FieldRef fr) return emitFieldRef(fr);
         if (expr instanceof Expr.BinaryOp op) return emitBinaryOp(op);
         if (expr instanceof Expr.Negate neg) return emitExpr(neg.operand()) + ".negate()";
-        return "null";
+        throw new Transpiler.TranspileException(
+            "Unrecognized expression type: " + expr.getClass().getSimpleName());
     }
 
     private String emitFieldRef(Expr.FieldRef fr) {
@@ -1181,10 +1361,18 @@ public final class JavaEmitter {
             return recRef(fr.name()) + ".substring(\"" + fr.name() + "\", "
                 + emitRefModArg(fr.refModPos()) + ", " + emitRefModArg(fr.refModLen()) + ")";
         }
-        if (fr.isSubscripted()) {
-            return recRef(fr.name()) + ".getDecimal(\"" + fr.name() + "\", " + emitSubscript(fr.subscript()) + ")";
+        String rec = recRef(fr.name());
+        if (isNumericField(fr.name())) {
+            if (fr.isSubscripted()) {
+                return rec + ".getDecimal(\"" + fr.name() + "\", " + emitSubscript(fr.subscript()) + ")";
+            }
+            return rec + ".getDecimal(\"" + fr.name() + "\")";
+        } else {
+            if (fr.isSubscripted()) {
+                return rec + ".getString(\"" + fr.name() + "\", " + emitSubscript(fr.subscript()) + ").trim()";
+            }
+            return rec + ".getString(\"" + fr.name() + "\").trim()";
         }
-        return recRef(fr.name()) + ".getDecimal(\"" + fr.name() + "\")";
     }
 
     /** Emit a reference modification argument as a raw integer. */
@@ -1325,13 +1513,14 @@ public final class JavaEmitter {
             return prefix + leftExpr + op;
         }
 
-        return "true"; // fallback
+        throw new Transpiler.TranspileException(
+            "Unrecognized condition type: " + cond.getClass().getSimpleName());
     }
 
     private String emitValueExpr(String val) {
-        if (val == null) return "null";
+        if (val == null) throw new Transpiler.TranspileException("Null value in emitValueExpr");
         if (val.startsWith("\"")) return val; // string literal
-        if (val.equals("SPACES") || val.equals("SPACE")) return "\"\"";
+        if (val.equals("SPACES") || val.equals("SPACE")) return "\" \"";
         if (val.equals("ZEROS") || val.equals("ZEROES")) return "Decimal.ZERO";
         if (val.matches("-?\\d+\\.?\\d*")) return "Decimal.of(\"" + val + "\")";
         // Reference modification: FIELD(pos:len)
@@ -1346,33 +1535,85 @@ public final class JavaEmitter {
     }
 
     private String fieldGet(String fieldName) {
-        if (fieldName == null) return "null";
+        if (fieldName == null) throw new Transpiler.TranspileException("Null field name in fieldGet");
         if (fieldName.matches("-?\\d+\\.?\\d*")) return "Decimal.of(\"" + fieldName + "\")";
-        return recRef(fieldName) + ".getDecimal(\"" + fieldName + "\")";
+        if (isNumericField(fieldName)) {
+            return recRef(fieldName) + ".getDecimal(\"" + fieldName + "\")";
+        }
+        return recRef(fieldName) + ".getString(\"" + fieldName + "\").trim()";
     }
 
 
     private String emitSizeErrorHandler(List<Statement> onErr, List<Statement> notErr) {
-        if (onErr == null || onErr.isEmpty()) return "";
-        return "SizeErrorHandler.onError(() -> { /* size error */ })";
+        if ((onErr == null || onErr.isEmpty()) && (notErr == null || notErr.isEmpty())) return "";
+        StringBuilder sb = new StringBuilder();
+        if (notErr != null && !notErr.isEmpty()) {
+            sb.append("SizeErrorHandler.of(() -> { ");
+            for (Statement s : onErr) {
+                sb.append(emitStatementInline(s)).append(" ");
+            }
+            sb.append("}, () -> { ");
+            for (Statement s : notErr) {
+                sb.append(emitStatementInline(s)).append(" ");
+            }
+            sb.append("})");
+        } else {
+            sb.append("SizeErrorHandler.onError(() -> { ");
+            for (Statement s : onErr) {
+                sb.append(emitStatementInline(s)).append(" ");
+            }
+            sb.append("})");
+        }
+        return sb.toString();
+    }
+
+    /** Emit a single statement as an inline string (for lambdas). */
+    private String emitStatementInline(Statement stmt) {
+        if (stmt instanceof Statement.Move m) {
+            String val = emitExpr(m.source());
+            return recRef(m.targets().get(0)) + ".move(\"" + m.targets().get(0) + "\", " + val + ");";
+        }
+        if (stmt instanceof Statement.SetCondition sc) {
+            return findRecordFor(sc.conditionName()) + ".set(\"" + sc.conditionName() + "\");";
+        }
+        if (stmt instanceof Statement.Display d) {
+            StringBuilder args = new StringBuilder();
+            for (int i = 0; i < d.items().size(); i++) {
+                if (i > 0) args.append(", ");
+                args.append(emitExpr(d.items().get(i)));
+            }
+            return "/* display */ System.out.println(" + args + ");";
+        }
+        throw new Transpiler.TranspileException(
+            "Unsupported statement in SIZE ERROR handler: " + stmt.getClass().getSimpleName()
+            + " — only MOVE, SET, and DISPLAY are supported inline");
     }
 
     // ── Naming helpers ──────────────────────────────────────────────
 
     private String recRef(String fieldOrRecName) {
-        // Find which record contains this field
-        // For simplicity, use the first 01-level record
+        // Strip subscript/refmod if present: "FIELD(1)" → "FIELD"
+        String name = fieldOrRecName;
+        if (name.contains("(")) name = name.substring(0, name.indexOf('('));
+
+        // Find which record contains this field or condition name
         List<RecordGroup> groups = groupByLevel01();
         if (groups.size() == 1) return toJavaFieldName(groups.get(0).name);
-        // Try to find by field name
-        for (RecordGroup g : groups) {
-            for (CobolProgram.DataEntry e : g.children) {
-                if (e.name().equalsIgnoreCase(fieldOrRecName)) {
-                    return toJavaFieldName(g.name);
-                }
-            }
+        String searchName = name;
+
+        // Look up in symbol table
+        FieldInfo info = symbolTable.get(searchName);
+        if (info != null) {
+            return toJavaFieldName(info.recordName);
         }
-        return groups.isEmpty() ? "rec" : toJavaFieldName(groups.get(0).name);
+
+        // Not found — fail hard with context
+        throw new Transpiler.TranspileException(
+            "Field or condition '" + searchName + "' (from '" + fieldOrRecName
+            + "') not found in any record. "
+            + "Available records and fields: " + groups.stream()
+                .map(g -> g.name + g.children.stream().map(e -> e.name()).toList())
+                .toList());
     }
 
     private String findRecordFor(String fieldName) {

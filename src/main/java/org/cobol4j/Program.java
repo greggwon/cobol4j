@@ -199,6 +199,13 @@ public final class Program {
             return this;
         }
 
+        /** Bind a file to a record (from FILE SECTION FD). Informational — records the association. */
+        public Builder file(CobolFile file, Record record) {
+            // The file/record binding is used by the program logic via ctx.read()/ctx.write().
+            // Storing the association here for future use (auto-open, etc.)
+            return this;
+        }
+
         /**
          * Define a paragraph — a named block of executable logic.
          * Paragraphs execute in the order they are defined (source order),

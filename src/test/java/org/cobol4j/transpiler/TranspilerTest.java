@@ -416,21 +416,26 @@ class TranspilerTest {
 
         TranspileDiagnostics diag = new TranspileDiagnostics();
         String java = Transpiler.transpile(cobol, diag);
-        assertNull(java, "Should fail with errors");
 
-        // Each unknown verb should produce exactly one error — not cascading
-        // errors from their arguments
-        long errorCount = diag.errors().size();
-        assertTrue(errorCount >= 2, "Should have multiple errors: " + diag.errors());
+        // Unknown verbs now generate warnings (not errors) and produce
+        // COBOL4J_UNSUPPORTED markers in the output — the user sees exactly
+        // where the gaps are and can fill them in.
+        assertNotNull(java, "Should produce output with unsupported markers");
+        assertTrue(java.contains("COBOL4J_UNSUPPORTED_FROBULATE"),
+            "Must generate marker for FROBULATE: " + java);
+        assertTrue(java.contains("COBOL4J_UNSUPPORTED_TRANSMOGIFY"),
+            "Must generate marker for TRANSMOGIFY: " + java);
 
-        // DISPLAY and STOP RUN should NOT produce errors — they're recognized verbs
-        // that were parsed after the error recovery skipped past the bad statements
-        assertFalse(diag.errors().stream()
-            .anyMatch(d -> d.cobolConstruct().equals("DISPLAY")),
-            "DISPLAY should not be an error: " + diag.errors());
-        assertFalse(diag.errors().stream()
-            .anyMatch(d -> d.cobolConstruct().equals("STOP")),
-            "STOP should not be an error: " + diag.errors());
+        // Each unknown verb should produce a warning — not cascading
+        long warnCount = diag.warnings().size();
+        assertTrue(warnCount >= 2, "Should have warnings for unknown verbs: " + diag.warnings());
+
+        // DISPLAY and STOP RUN should still work — they're recognized verbs
+        // that were parsed after error recovery skipped the unknown ones
+        assertTrue(java.contains("ctx.display("),
+            "DISPLAY should still be emitted: " + java);
+        assertTrue(java.contains("ctx.stopRun()"),
+            "STOP RUN should still be emitted: " + java);
         } finally {
             System.out.println("--- End expected errors ---");
         }

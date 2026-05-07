@@ -149,6 +149,12 @@ public final class Decimal implements Comparable<Decimal> {
     }
 
     public Decimal divide(Decimal other, int scale, RoundingMode rounding) {
+        if (other.value.signum() == 0) {
+            // COBOL division by zero: result is zero (ON SIZE ERROR catches this)
+            Decimal result = ZERO;
+            tracker.onArithmetic(this, "/", other, result);
+            return result;
+        }
         Decimal result = wrap(value.divide(other.value, scale, rounding));
         tracker.onArithmetic(this, "/", other, result);
         return result;

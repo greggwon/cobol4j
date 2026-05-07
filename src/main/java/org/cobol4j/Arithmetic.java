@@ -194,6 +194,12 @@ public final class Arithmetic {
             int scale = quotientPic.decimalDigits();
             RoundingMode mode = rounded ? RoundingMode.HALF_UP : RoundingMode.DOWN;
 
+            // Division by zero triggers SIZE ERROR
+            if (divisor.signum() == 0) {
+                handler.onSizeError();
+                return;
+            }
+
             // Compute quotient with enough precision
             BigDecimal quotient = dividend.divide(divisor, scale + 5, RoundingMode.DOWN);
             BigDecimal fitted = quotient.setScale(scale, mode);

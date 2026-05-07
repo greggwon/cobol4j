@@ -128,6 +128,12 @@ public final class Transpiler {
             this.diagnostics = diag;
         }
 
+        /** Direct message — for failures detected outside the diagnostics pipeline. */
+        public TranspileException(String message) {
+            super(message);
+            this.diagnostics = null;
+        }
+
         public TranspileDiagnostics diagnostics() { return diagnostics; }
 
         private static String buildMessage(TranspileDiagnostics diag) {

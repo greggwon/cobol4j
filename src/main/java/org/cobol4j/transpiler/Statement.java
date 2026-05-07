@@ -34,17 +34,51 @@ public sealed interface Statement {
 
     // ── Arithmetic ──────────────────────────────────────────────────
 
-    record Add(List<Expr> sources, List<String> targets, String giving, boolean rounded,
-               List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {}
+    record Add(List<Expr> sources, List<String> targets, List<String> givingTargets, boolean rounded,
+               List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {
+        /** Backward-compatible: single GIVING target. */
+        public Add(List<Expr> sources, List<String> targets, String giving, boolean rounded,
+                   List<Statement> onSizeError, List<Statement> notOnSizeError) {
+            this(sources, targets,
+                 giving == null ? List.of() : List.of(giving),
+                 rounded, onSizeError, notOnSizeError);
+        }
+        /** First GIVING target, or null if none. */
+        public String giving() { return givingTargets.isEmpty() ? null : givingTargets.get(0); }
+    }
 
-    record Subtract(List<Expr> subtrahends, List<String> targets, String giving, boolean rounded,
-                    List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {}
+    record Subtract(List<Expr> subtrahends, List<String> targets, List<String> givingTargets, boolean rounded,
+                    List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {
+        public Subtract(List<Expr> subtrahends, List<String> targets, String giving, boolean rounded,
+                        List<Statement> onSizeError, List<Statement> notOnSizeError) {
+            this(subtrahends, targets,
+                 giving == null ? List.of() : List.of(giving),
+                 rounded, onSizeError, notOnSizeError);
+        }
+        public String giving() { return givingTargets.isEmpty() ? null : givingTargets.get(0); }
+    }
 
-    record Multiply(Expr a, Expr by, String giving, boolean rounded,
-                    List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {}
+    record Multiply(Expr a, Expr by, List<String> givingTargets, boolean rounded,
+                    List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {
+        public Multiply(Expr a, Expr by, String giving, boolean rounded,
+                        List<Statement> onSizeError, List<Statement> notOnSizeError) {
+            this(a, by,
+                 giving == null ? List.of() : List.of(giving),
+                 rounded, onSizeError, notOnSizeError);
+        }
+        public String giving() { return givingTargets.isEmpty() ? null : givingTargets.get(0); }
+    }
 
-    record Divide(Expr dividend, Expr divisor, String giving, String remainder,
-                  boolean rounded, List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {}
+    record Divide(Expr dividend, Expr divisor, List<String> givingTargets, String remainder,
+                  boolean rounded, List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {
+        public Divide(Expr dividend, Expr divisor, String giving, String remainder,
+                      boolean rounded, List<Statement> onSizeError, List<Statement> notOnSizeError) {
+            this(dividend, divisor,
+                 giving == null ? List.of() : List.of(giving),
+                 remainder, rounded, onSizeError, notOnSizeError);
+        }
+        public String giving() { return givingTargets.isEmpty() ? null : givingTargets.get(0); }
+    }
 
     record Compute(String target, Expr expression, boolean rounded,
                    List<Statement> onSizeError, List<Statement> notOnSizeError) implements Statement {}
@@ -172,6 +206,27 @@ public sealed interface Statement {
     // ── SQL ─────────────────────────────────────────────────────────
 
     record ExecSql(String sqlText) implements Statement {}
+
+    // ── Unsupported — generates informative but uncompilable Java ───
+
+    /**
+     * Placeholder for a COBOL construct that the transpiler does not yet handle.
+     * The emitter generates a clear comment with the COBOL source and a deliberate
+     * compile error, so the user sees exactly where the gap is and can fill it in.
+     *
+     * @param verb        the COBOL verb (e.g., "START", "ALTER")
+     * @param rawCobol    the original COBOL source text
+     * @param line        COBOL source line number
+     * @param hint        suggestion for how to implement manually
+     */
+    record Unsupported(String verb, String rawCobol, int line,
+                       String hint) implements Statement {}
+
+    // ── SET index UP/DOWN BY ─────────────────────────────────────────
+
+    /** SET index-name UP BY / DOWN BY value */
+    record SetIndex(String indexName, String direction,
+                    Expr value) implements Statement {}
 
     // ── Condition (used within IF, PERFORM UNTIL, etc.) ─────────────
     // Conditions form a tree: AND/OR combine sub-conditions.
