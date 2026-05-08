@@ -417,9 +417,23 @@ public final class JavaEmitter {
         else if (stmt instanceof Statement.Delete dl) line("ctx.delete(" + toJavaFieldName(dl.fileName()) + ");");
         else if (stmt instanceof Statement.Continue c) line("// CONTINUE");
         else if (stmt instanceof Statement.SetIndex si) emitSetIndex(si);
+        else if (stmt instanceof Statement.SetIndexTo sit) emitSetIndexTo(sit);
+        else if (stmt instanceof Statement.Start st) emitStart(st);
+        else if (stmt instanceof Statement.Release rel) emitRelease(rel);
+        else if (stmt instanceof Statement.ReturnStmt ret) emitReturn(ret);
+        else if (stmt instanceof Statement.Cancel cn) emitCancel(cn);
+        else if (stmt instanceof Statement.Alter al) emitAlter(al);
+        else if (stmt instanceof Statement.Enter en) emitEnter(en);
+        else if (stmt instanceof Statement.Generate gen) emitGenerate(gen);
+        else if (stmt instanceof Statement.Terminate term) emitTerminate(term);
+        else if (stmt instanceof Statement.Suppress sup) emitSuppress();
+        else if (stmt instanceof Statement.Initiate ini) emitInitiate(ini);
+        else if (stmt instanceof Statement.UseDeclarative use) emitUseDeclarative(use);
         else if (stmt instanceof Statement.Unsupported u) emitUnsupported(u);
         // WhenClause, CallParam, StringSource, SearchWhen, SortKey handled within parent
     }
+
+    // ── SET index ──────────────────────────────────────────────────
 
     private void emitSetIndex(Statement.SetIndex si) {
         String rec = recRef(si.indexName());
@@ -430,6 +444,111 @@ public final class JavaEmitter {
             line(rec + ".subtract(\"" + si.indexName() + "\", " + val + ");");
         }
     }
+
+    private void emitSetIndexTo(Statement.SetIndexTo sit) {
+        line(recRef(sit.indexName()) + ".move(\"" + sit.indexName() + "\", " + emitExpr(sit.value()) + ");");
+    }
+
+    // ── START — keyed file positioning ─────────────────────────────
+
+    private void emitStart(Statement.Start st) {
+        String fileVar = toJavaFieldName(st.fileName());
+        String condition = switch (st.condition()) {
+            case "GREATER" -> "CobolFile.StartCondition.GREATER";
+            case "NOT_LESS" -> "CobolFile.StartCondition.NOT_LESS";
+            default -> "CobolFile.StartCondition.EQUAL";
+        };
+        if (st.keyName() != null) {
+            line(fileVar + ".start(\"" + st.keyName() + "\", "
+                + recRef(st.keyName()) + ".getString(\"" + st.keyName() + "\").trim(), "
+                + condition + ");");
+        } else {
+            line(fileVar + ".start(" + condition + ");");
+        }
+    }
+
+    // ── RELEASE / RETURN — SORT input/output ───────────────────────
+
+    private void emitRelease(Statement.Release rel) {
+        String recVar = toJavaFieldName(rel.recordName());
+        if (rel.from() != null) {
+            line(recVar + ".loadFrom(" + recRef(rel.from()) + ".buffer());");
+        }
+        line("sortInput.release(); // RELEASE " + rel.recordName());
+    }
+
+    private void emitReturn(Statement.ReturnStmt ret) {
+        String intoVar = ret.into() != null ? toJavaFieldName(ret.into()) : null;
+        line("if (sortOutput.returnRecord()) {");
+        indent++;
+        if (intoVar != null) {
+            line(intoVar + ".loadFrom(sortOutput.currentRecord());");
+        }
+        if (ret.notAtEnd() != null) {
+            for (Statement s : ret.notAtEnd()) emitStatement(s);
+        }
+        indent--;
+        line("} else {");
+        indent++;
+        if (ret.atEnd() != null) {
+            for (Statement s : ret.atEnd()) emitStatement(s);
+        }
+        indent--;
+        line("}");
+    }
+
+    // ── No-op verbs (logged at runtime) ────────────────────────────
+
+    private void emitCancel(Statement.Cancel cn) {
+        line("LOG.warning(\"CANCEL " + cn.programName()
+            + " — no-op in Java (classloader manages program lifecycle)\");");
+    }
+
+    private void emitAlter(Statement.Alter al) {
+        line("LOG.warning(\"ALTER " + al.paragraph() + " TO " + al.target()
+            + " at COBOL line " + al.line()
+            + " — not supported. Refactor to IF/EVALUATE.\");");
+    }
+
+    private void emitEnter(Statement.Enter en) {
+        line("LOG.warning(\"ENTER " + en.language()
+            + " at COBOL line " + en.line()
+            + " — dialect-specific, no-op in Java\");");
+    }
+
+    // ── Report Writer (delegates to service interface) ──────────────
+
+    private void emitGenerate(Statement.Generate gen) {
+        line("LOG.warning(\"GENERATE " + gen.reportOrDetail()
+            + " — Report Writer not yet implemented. "
+            + "Provide a ReportService implementation.\");");
+    }
+
+    private void emitTerminate(Statement.Terminate term) {
+        line("LOG.warning(\"TERMINATE " + term.reportName()
+            + " — Report Writer not yet implemented.\");");
+    }
+
+    private void emitSuppress() {
+        line("LOG.warning(\"SUPPRESS PRINTING — Report Writer not yet implemented.\");");
+    }
+
+    private void emitInitiate(Statement.Initiate ini) {
+        line("LOG.warning(\"INITIATE " + ini.reportName()
+            + " — Report Writer not yet implemented.\");");
+    }
+
+    // ── USE declarative ────────────────────────────────────────────
+
+    private void emitUseDeclarative(Statement.UseDeclarative use) {
+        line("LOG.warning(\"USE AFTER " + use.scope()
+            + " ON " + (use.fileName() != null ? use.fileName() : "ALL FILES")
+            + " at COBOL line " + use.line()
+            + " — Declaratives not yet implemented. "
+            + "Register a file error handler via CobolFile.onError().\");");
+    }
+
+    // ── Unsupported (compile error marker) ─────────────────────────
 
     private void emitUnsupported(Statement.Unsupported u) {
         line("// COBOL line " + u.line() + ": " + u.rawCobol());

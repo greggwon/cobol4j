@@ -207,26 +207,68 @@ public sealed interface Statement {
 
     record ExecSql(String sqlText) implements Statement {}
 
-    // ── Unsupported — generates informative but uncompilable Java ───
+    // ── START — keyed file positioning ──────────────────────────────
 
-    /**
-     * Placeholder for a COBOL construct that the transpiler does not yet handle.
-     * The emitter generates a clear comment with the COBOL source and a deliberate
-     * compile error, so the user sees exactly where the gap is and can fill it in.
-     *
-     * @param verb        the COBOL verb (e.g., "START", "ALTER")
-     * @param rawCobol    the original COBOL source text
-     * @param line        COBOL source line number
-     * @param hint        suggestion for how to implement manually
-     */
-    record Unsupported(String verb, String rawCobol, int line,
-                       String hint) implements Statement {}
+    /** START file-name KEY IS condition key-name */
+    record Start(String fileName, String keyName, String condition) implements Statement {}
 
-    // ── SET index UP/DOWN BY ─────────────────────────────────────────
+    // ── SORT verbs — RELEASE / RETURN ────────────────────────────────
+
+    /** RELEASE sort-record [FROM identifier] — write to sort input */
+    record Release(String recordName, String from) implements Statement {}
+
+    /** RETURN sort-file INTO identifier — read from sort output */
+    record ReturnStmt(String fileName, String into,
+                      List<Statement> atEnd, List<Statement> notAtEnd) implements Statement {}
+
+    // ── No-op verbs (logged at runtime) ──────────────────────────────
+
+    /** CANCEL program-name — release called program. No-op in Java. */
+    record Cancel(String programName) implements Statement {}
+
+    /** ALTER paragraph-name TO PROCEED TO target — runtime GO TO redirect. */
+    record Alter(String paragraph, String target, int line) implements Statement {}
+
+    /** ENTER language-name — dialect-specific, always a no-op. */
+    record Enter(String language, int line) implements Statement {}
+
+    // ── Report Writer stubs (delegate to ReportService) ──────────────
+
+    /** GENERATE report-name / detail-name */
+    record Generate(String reportOrDetail) implements Statement {}
+
+    /** TERMINATE report-name */
+    record Terminate(String reportName) implements Statement {}
+
+    /** SUPPRESS PRINTING */
+    record Suppress() implements Statement {}
+
+    /** INITIATE report-name */
+    record Initiate(String reportName) implements Statement {}
+
+    // ── USE declarative ──────────────────────────────────────────────
+
+    /** USE AFTER STANDARD EXCEPTION/ERROR PROCEDURE ON file-name */
+    record UseDeclarative(String scope, String fileName, int line) implements Statement {}
+
+    // ── SET index TO literal ─────────────────────────────────────────
 
     /** SET index-name UP BY / DOWN BY value */
     record SetIndex(String indexName, String direction,
                     Expr value) implements Statement {}
+
+    /** SET index-name TO value */
+    record SetIndexTo(String indexName, Expr value) implements Statement {}
+
+    // ── Unsupported — generates informative but uncompilable Java ───
+
+    /**
+     * Placeholder for a COBOL construct that the transpiler cannot handle.
+     * The emitter generates a deliberate compile error with the COBOL source
+     * and a hint, so the user sees exactly where the gap is and can fill it in.
+     */
+    record Unsupported(String verb, String rawCobol, int line,
+                       String hint) implements Statement {}
 
     // ── Condition (used within IF, PERFORM UNTIL, etc.) ─────────────
     // Conditions form a tree: AND/OR combine sub-conditions.

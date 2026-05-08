@@ -519,13 +519,26 @@ public final class Parser {
             // ── Implemented as synonyms ────────────────────────────
             case "GOBACK"     -> { advance(); consumeStatementEnd(); yield new Statement.StopRun(); }
 
-            // ── Known but not yet fully implemented ────────────────
-            case "START"      -> parseUnsupported("START",
-                "Keyed file positioning. Use CobolFile API: file.start(mode, key)");
-            case "ALTER"      -> parseUnsupported("ALTER",
-                "Modify GO TO target at runtime. Refactor to use IF/EVALUATE instead");
-            case "CANCEL"     -> parseUnsupported("CANCEL",
-                "Release called program. In Java, this is managed by the classloader");
+            // ── File positioning ────────────────────────────────────
+            case "START"      -> parseStart();
+
+            // ── SORT input/output ──────────────────────────────────
+            case "RELEASE"    -> parseRelease();
+            case "RETURN"     -> parseReturn();
+
+            // ── No-op verbs (logged at runtime) ────────────────────
+            case "CANCEL"     -> parseCancel();
+            case "ALTER"      -> parseAlter();
+            case "ENTER"      -> parseEnter();
+
+            // ── Report Writer (delegates to ReportService) ─────────
+            case "GENERATE"   -> parseGenerate();
+            case "TERMINATE"  -> parseTerminate();
+            case "SUPPRESS"   -> { advance(); matchWord("PRINTING"); consumeStatementEnd(); yield new Statement.Suppress(); }
+            case "INITIATE"   -> { advance(); String rpt = current().value(); advance(); consumeStatementEnd(); yield new Statement.Initiate(rpt); }
+
+            // ── Declaratives ───────────────────────────────────────
+            case "USE"        -> parseUse();
 
             // ── Truly unknown ───────────────────────────────────────
             default -> {
@@ -1004,9 +1017,14 @@ public final class Parser {
         }
 
         expect("TO");
-        advance(); // consume TRUE or value
+        if (matchWord("TRUE")) {
+            consumeStatementEnd();
+            return new Statement.SetCondition(name);
+        }
+        // SET index TO value (numeric or field)
+        Expr value = parseExpr();
         consumeStatementEnd();
-        return new Statement.SetCondition(name);
+        return new Statement.SetIndexTo(name, value);
     }
 
     private Statement parseInitialize() {
@@ -2020,6 +2038,132 @@ public final class Parser {
         return sb.toString();
     }
 
+    // ── New verb parsers ──────────────────────────────────────────
+
+    private Statement parseStart() {
+        advance(); // consume START
+        String fileName = current().value(); advance();
+        String condition = "EQUAL"; // default
+        String keyName = null;
+        if (matchWord("KEY")) {
+            matchWord("IS"); // optional
+            if (matchWord("EQUAL") || matchWord("=")) condition = "EQUAL";
+            else if (matchWord("GREATER") || matchWord(">")) condition = "GREATER";
+            else if (matchWord("NOT")) {
+                if (matchWord("LESS") || matchWord("<")) condition = "NOT_LESS";
+                else condition = "NOT_LESS";
+            }
+            matchWord("TO"); // optional
+            keyName = current().value(); advance();
+        }
+        consumeStatementEnd();
+        return new Statement.Start(fileName, keyName, condition);
+    }
+
+    private Statement parseRelease() {
+        advance(); // consume RELEASE
+        String recordName = current().value(); advance();
+        String from = null;
+        if (matchWord("FROM")) {
+            from = current().value(); advance();
+        }
+        consumeStatementEnd();
+        return new Statement.Release(recordName, from);
+    }
+
+    private Statement parseReturn() {
+        advance(); // consume RETURN
+        String fileName = current().value(); advance();
+        matchWord("RECORD"); // optional
+        String into = null;
+        if (matchWord("INTO")) {
+            into = current().value(); advance();
+        }
+        var atEnd = parseAtEnd();
+        consumeStatementEnd();
+        return new Statement.ReturnStmt(fileName, into, atEnd.get(0), atEnd.get(1));
+    }
+
+    private Statement parseCancel() {
+        advance(); // consume CANCEL
+        String programName;
+        if (current().type() == Token.Type.STRING) {
+            programName = current().value(); advance();
+        } else {
+            programName = current().value(); advance();
+        }
+        consumeStatementEnd();
+        return new Statement.Cancel(programName);
+    }
+
+    private Statement parseAlter() {
+        int line = current().line();
+        advance(); // consume ALTER
+        String paragraph = current().value(); advance();
+        expect("TO");
+        matchWord("PROCEED"); matchWord("TO"); // optional
+        String target = current().value(); advance();
+        consumeStatementEnd();
+        return new Statement.Alter(paragraph, target, line);
+    }
+
+    private Statement parseEnter() {
+        int line = current().line();
+        advance(); // consume ENTER
+        String language = current().value(); advance();
+        consumeStatementEnd();
+        return new Statement.Enter(language, line);
+    }
+
+    private Statement parseGenerate() {
+        advance(); // consume GENERATE
+        String name = current().value(); advance();
+        consumeStatementEnd();
+        return new Statement.Generate(name);
+    }
+
+    private Statement parseTerminate() {
+        advance(); // consume TERMINATE
+        String name = current().value(); advance();
+        consumeStatementEnd();
+        return new Statement.Terminate(name);
+    }
+
+    private Statement parseUse() {
+        int line = current().line();
+        advance(); // consume USE
+        matchWord("AFTER"); matchWord("STANDARD");
+        String scope = "EXCEPTION"; // default
+        if (matchWord("EXCEPTION") || matchWord("ERROR")) {
+            scope = "EXCEPTION";
+        }
+        matchWord("PROCEDURE"); matchWord("ON");
+        String fileName = null;
+        if (!atEnd() && !atPeriod()) {
+            fileName = current().value(); advance();
+        }
+        consumeStatementEnd();
+        return new Statement.UseDeclarative(scope, fileName, line);
+    }
+
+    /** Parse AT END / NOT AT END clauses (used by READ, RETURN). */
+    private List<List<Statement>> parseAtEnd() {
+        List<Statement> atEnd = new ArrayList<>();
+        List<Statement> notAtEnd = new ArrayList<>();
+        if (matchWord("AT")) {
+            if (matchWord("END")) {
+                atEnd = parseStatements();
+            }
+        }
+        if (peek("NOT") && peek(1, "AT")) {
+            advance(); // NOT
+            advance(); // AT
+            advance(); // END
+            notAtEnd = parseStatements();
+        }
+        return List.of(atEnd, notAtEnd);
+    }
+
     private void skipDivision() {
         // Skip until next DIVISION keyword
         expect("DIVISION");
@@ -2038,7 +2182,10 @@ public final class Parser {
                  "STRING", "UNSTRING", "SEARCH", "SORT", "MERGE",
                  "CALL", "INVOKE", "EXIT", "EXEC", "CONTINUE",
                  "XML", "JSON",
-                 "GOBACK", "START", "ALTER", "CANCEL" -> true;
+                 "GOBACK", "START", "ALTER", "CANCEL", "ENTER",
+                 "RELEASE", "RETURN",
+                 "GENERATE", "TERMINATE", "SUPPRESS", "INITIATE",
+                 "USE" -> true;
             default -> false;
         };
     }

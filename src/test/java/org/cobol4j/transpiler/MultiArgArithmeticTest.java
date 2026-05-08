@@ -322,21 +322,14 @@ class MultiArgArithmeticTest {
     // ═══════════════════════════════════════════════════════════════
 
     @Test
-    void unsupportedVerbGeneratesMarker() {
-        // START is a known-but-unimplemented verb
+    void startVerbEmitsFileStart() {
+        // START is now a real verb — should emit a file.start() call
         String java = transpile("""
                 START WS-A.
                 STOP RUN.
             """);
-        // Must generate the COBOL4J_UNSUPPORTED marker
-        assertTrue(java.contains("COBOL4J_UNSUPPORTED_START"),
-            "Must emit COBOL4J_UNSUPPORTED_START marker: " + java);
-        // Must include the original COBOL text as a comment
-        assertTrue(java.contains("// COBOL line"),
-            "Must include COBOL line reference: " + java);
-        // Must include a hint for the user
-        assertTrue(java.contains("CobolFile"),
-            "Must include implementation hint: " + java);
+        assertTrue(java.contains(".start("),
+            "START must emit a file start call: " + java);
     }
 
     @Test
@@ -348,6 +341,80 @@ class MultiArgArithmeticTest {
             """);
         assertTrue(java.contains("COBOL4J_UNSUPPORTED_FOOBAR"),
             "Unknown verb must generate marker: " + java);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Newly implemented verbs — verify they generate compilable Java
+    // ═══════════════════════════════════════════════════════════════
+
+    @Test
+    void cancelEmitsWarning() {
+        String java = transpile("""
+                CANCEL "SUBPROG".
+                STOP RUN.
+            """);
+        assertTrue(java.contains("LOG.warning") && java.contains("CANCEL"),
+            "CANCEL must emit a LOG.warning: " + java);
+    }
+
+    @Test
+    void alterEmitsWarning() {
+        String java = transpile("""
+                ALTER WS-A TO PROCEED TO WS-B.
+                STOP RUN.
+            """);
+        assertTrue(java.contains("LOG.warning") && java.contains("ALTER"),
+            "ALTER must emit a LOG.warning: " + java);
+    }
+
+    @Test
+    void generateEmitsWarning() {
+        String java = transpile("""
+                GENERATE WS-A.
+                STOP RUN.
+            """);
+        assertTrue(java.contains("LOG.warning") && java.contains("GENERATE"),
+            "GENERATE must emit LOG.warning for Report Writer: " + java);
+    }
+
+    @Test
+    void terminateEmitsWarning() {
+        String java = transpile("""
+                TERMINATE WS-A.
+                STOP RUN.
+            """);
+        assertTrue(java.contains("LOG.warning") && java.contains("TERMINATE"),
+            "TERMINATE must emit LOG.warning for Report Writer: " + java);
+    }
+
+    @Test
+    void setIndexToEmitsMove() {
+        String java = transpile("""
+                SET WS-A TO 5.
+                STOP RUN.
+            """);
+        assertTrue(java.contains(".move(\"WS-A\""),
+            "SET idx TO value must emit move: " + java);
+    }
+
+    @Test
+    void releaseEmitsSort() {
+        String java = transpile("""
+                RELEASE WS-A.
+                STOP RUN.
+            """);
+        assertTrue(java.contains("sortInput.release()"),
+            "RELEASE must emit sortInput.release(): " + java);
+    }
+
+    @Test
+    void returnStmtEmitsSort() {
+        String java = transpile("""
+                RETURN WS-A INTO WS-B.
+                STOP RUN.
+            """);
+        assertTrue(java.contains("sortOutput.returnRecord()"),
+            "RETURN must emit sortOutput.returnRecord(): " + java);
     }
 
     // ═══════════════════════════════════════════════════════════════
