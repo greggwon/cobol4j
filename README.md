@@ -21,7 +21,9 @@ calls against a runtime that already understands COBOL semantics.** The transpil
 becomes a thin syntax-directed translator. All the hard behavioral correctness lives
 in one testable, versioned library.
 
-See [DESIGN.md](DESIGN.md) for the architecture philosophy.
+See [DESIGN.md](DESIGN.md) for the architecture philosophy and
+[COMPARISON.md](COMPARISON.md) for a detailed look at how this approach differs
+from mechanical COBOL-to-Java compilers.
 
 ## Getting Started
 
