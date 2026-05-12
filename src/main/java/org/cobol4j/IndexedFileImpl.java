@@ -170,6 +170,12 @@ final class IndexedFileImpl implements CobolFile {
     @Override
     public FileStatus status() { return fileStatus; }
 
+    @Override
+    public java.io.InputStream inputStream() { return null; } // indexed uses key-based access
+
+    @Override
+    public java.io.OutputStream outputStream() { return null; } // indexed uses key-based access
+
     // ── persistence (simple line-based for prototype) ───────────────
 
     private void loadFromDisk() {

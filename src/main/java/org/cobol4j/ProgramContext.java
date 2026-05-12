@@ -534,9 +534,11 @@ public final class ProgramContext {
         public ProgramContext execute() {
             boolean ok;
             if (intoRecord != null) {
-                ok = file.read(intoRecord.rawBuffer());
+                ok = file.read(intoRecord);
             } else {
-                ok = file.read(new byte[0]);
+                throw new IllegalStateException(
+                    "READ without INTO — the file must have an associated record. "
+                    + "Use .into(record) on the ReadBuilder.");
             }
 
             if (!ok && atEnd != null) {

@@ -107,7 +107,7 @@ final class SequentialFileImpl implements CobolFile {
         }
         try {
             int totalRead = 0;
-            int size = Math.min(recordSize, buffer.length);
+            int size = recordSize > 0 ? Math.min(recordSize, buffer.length) : buffer.length;
             while (totalRead < size) {
                 int n = input.read(buffer, totalRead, size - totalRead);
                 if (n < 0) {
@@ -134,7 +134,7 @@ final class SequentialFileImpl implements CobolFile {
     private boolean readFromRandomAccess(byte[] buffer) {
         try {
             int totalRead = 0;
-            int size = Math.min(recordSize, buffer.length);
+            int size = recordSize > 0 ? Math.min(recordSize, buffer.length) : buffer.length;
             while (totalRead < size) {
                 int n = ioFile.read(buffer, totalRead, size - totalRead);
                 if (n < 0) {
@@ -169,10 +169,11 @@ final class SequentialFileImpl implements CobolFile {
             return;
         }
         try {
-            // Write exactly recordSize bytes, padding if needed
-            output.write(buffer, 0, Math.min(recordSize, buffer.length));
-            if (buffer.length < recordSize) {
-                byte[] pad = new byte[recordSize - buffer.length];
+            // Write exactly recordSize bytes (or buffer length if recordSize not set), padding if needed
+            int writeSize = recordSize > 0 ? recordSize : buffer.length;
+            output.write(buffer, 0, Math.min(writeSize, buffer.length));
+            if (buffer.length < writeSize) {
+                byte[] pad = new byte[writeSize - buffer.length];
                 java.util.Arrays.fill(pad, (byte) ' ');
                 output.write(pad);
             }
@@ -219,4 +220,10 @@ final class SequentialFileImpl implements CobolFile {
 
     @Override
     public FileStatus status() { return fileStatus; }
+
+    @Override
+    public java.io.InputStream inputStream() { return input; }
+
+    @Override
+    public java.io.OutputStream outputStream() { return output; }
 }

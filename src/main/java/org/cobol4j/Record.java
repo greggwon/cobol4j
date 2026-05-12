@@ -53,15 +53,15 @@ import org.cobol4j.interop.Ebcdic;
  * if (customer.is("ACTIVE")) { ... }
  * }</pre>
  */
-public final class Record {
+public final class Record extends BaseRecord {
+
+    private static final long serialVersionUID = 1L;
 
     private final String name;
-    private final int totalSize;
-    private final Map<String, FieldDef> fieldsByName;      // flat lookup
-    private final Map<String, Condition> conditionsByName;  // all 88-levels
-    private final List<FieldDef> topLevelFields;            // hierarchical
-    private final byte[] data;
-    private final Ebcdic encoding;  // null = ASCII (default), non-null = EBCDIC mode
+    private final transient Map<String, FieldDef> fieldsByName;      // flat lookup
+    private final transient Map<String, Condition> conditionsByName;  // all 88-levels
+    private final transient List<FieldDef> topLevelFields;            // hierarchical
+    private final transient Ebcdic encoding;  // null = ASCII (default), non-null = EBCDIC mode
 
     private Record(String name, int totalSize,
                    Map<String, FieldDef> fieldsByName,
@@ -69,12 +69,11 @@ public final class Record {
                    List<FieldDef> topLevelFields,
                    byte[] data,
                    Ebcdic encoding) {
+        super(totalSize, data);
         this.name = name;
-        this.totalSize = totalSize;
         this.fieldsByName = fieldsByName;
         this.conditionsByName = conditionsByName;
         this.topLevelFields = topLevelFields;
-        this.data = data;
         this.encoding = encoding;
     }
 
@@ -87,15 +86,15 @@ public final class Record {
 
     /** Create a new instance with the same definition but a fresh (space-filled) buffer. */
     public Record newInstance() {
-        byte[] buf = new byte[totalSize];
+        byte[] buf = new byte[recordSize];
         Arrays.fill(buf, spaceByte());
-        return new Record(name, totalSize, fieldsByName, conditionsByName,
+        return new Record(name, recordSize, fieldsByName, conditionsByName,
                           topLevelFields, buf, encoding);
     }
 
     /** Create a new instance initialized as a copy of this record's data. */
     public Record duplicate() {
-        return new Record(name, totalSize, fieldsByName, conditionsByName,
+        return new Record(name, recordSize, fieldsByName, conditionsByName,
                           topLevelFields, Arrays.copyOf(data, data.length), encoding);
     }
 
@@ -151,6 +150,11 @@ public final class Record {
     /** Direct access to the backing buffer — package-private for file I/O. */
     byte[] rawBuffer() { return data; }
 
+    @Override
+    protected byte spaceByte() {
+        return encoding != null ? (byte) 0x40 : (byte) ' '; // 0x40 = EBCDIC space
+    }
+
     /**
      * Load external bytes into this record's buffer (e.g., from file I/O).
      * Copies up to the record's length, padding remainder with spaces.
@@ -165,7 +169,7 @@ public final class Record {
     }
 
     /** Total record size in bytes. */
-    public int length() { return totalSize; }
+    public int length() { return recordSize; }
 
     /** Record name. */
     public String name() { return name; }
@@ -1026,10 +1030,7 @@ public final class Record {
 
     // ── encoding helpers ────────────────────────────────────────────
 
-    /** Returns the space byte for this record's encoding (0x40 for EBCDIC, 0x20 for ASCII). */
-    private byte spaceByte() {
-        return encoding != null ? (byte) 0x40 : (byte) ' ';
-    }
+    // spaceByte() inherited from BaseRecord, overridden above
 
     /** Returns the zero byte for alphanumeric fields (0xF0 for EBCDIC, 0x30 for ASCII). */
     private byte zeroByte() {

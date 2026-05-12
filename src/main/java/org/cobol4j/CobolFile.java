@@ -18,6 +18,8 @@
  */
 package org.cobol4j;
 
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.function.Consumer;
 
 /**
@@ -59,35 +61,54 @@ public interface CobolFile {
     void close();
 
     /**
-     * READ — read the next record into the buffer.
+     * READ — read the next record into a raw byte buffer.
      * Returns true if a record was read, false on end-of-file.
-     * Sets the file status accordingly.
      */
     boolean read(byte[] buffer);
 
     /**
-     * READ INTO — read into a Record, sizing from the record's buffer.
+     * READ INTO — the Record reads itself from this file's input stream.
+     * The Record owns its size and format — no external size configuration needed.
      */
     default boolean read(Record record) {
-        return read(record.buffer());
+        InputStream in = inputStream();
+        if (in == null) return false;
+        try {
+            return record.readFrom(in);
+        } catch (java.io.IOException e) {
+            return false;
+        }
     }
 
     /**
-     * WRITE — write a record from the buffer.
+     * WRITE — write raw bytes.
      */
     void write(byte[] buffer);
 
     /**
-     * WRITE FROM — write from a Record.
+     * WRITE FROM — the Record writes itself to this file's output stream.
+     * The Record owns its size and format.
      */
     default void write(Record record) {
-        write(record.buffer());
+        OutputStream out = outputStream();
+        if (out == null) return;
+        try {
+            record.writeTo(out);
+        } catch (java.io.IOException e) {
+            throw new RuntimeException("WRITE failed for " + name() + ": " + e.getMessage(), e);
+        }
     }
 
     /**
      * REWRITE — update the last-read record.
      */
     void rewrite(byte[] buffer);
+
+    /** Access the underlying input stream (when open for INPUT or I-O). */
+    InputStream inputStream();
+
+    /** Access the underlying output stream (when open for OUTPUT, EXTEND, or I-O). */
+    OutputStream outputStream();
 
     /**
      * DELETE — delete the last-read record (indexed/relative files).

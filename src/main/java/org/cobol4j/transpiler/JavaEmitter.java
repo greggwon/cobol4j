@@ -695,6 +695,10 @@ public final class JavaEmitter {
                     String idx = emitSubscriptString(inside);
                     line(recRef(fieldName) + ".move(\"" + fieldName + "\", " + idx + ", " + val + ");");
                 }
+            } else if (isRecordName(target)) {
+                // MOVE to a 01-level group — write into the record's buffer
+                line(toJavaFieldName(target) + ".loadFrom(String.valueOf(" + val
+                    + ").getBytes(java.nio.charset.StandardCharsets.US_ASCII));");
             } else {
                 line(recRef(target) + ".move(\"" + target + "\", " + val + ");");
             }
@@ -1057,6 +1061,14 @@ public final class JavaEmitter {
 
     /** Find the file variable name associated with a record name. */
     /** Check if a name is a top-level (01/77) record name, not a field within a record. */
+    /** Find the record name associated with a file from the FD bindings. */
+    private String findRecordForFile(String fileName) {
+        for (CobolProgram.FileBinding fb : program.fileBindings()) {
+            if (fb.fileName().equalsIgnoreCase(fileName)) return fb.recordName();
+        }
+        return null;
+    }
+
     /** Find the SELECT/FILE-CONTROL entry for a given file name. */
     private CobolProgram.FileControl findFileControl(String fileName) {
         for (CobolProgram.FileControl fc : program.fileControls()) {
@@ -1086,6 +1098,12 @@ public final class JavaEmitter {
         sb.append("ctx.read(").append(file).append(")");
         if (r.into() != null) {
             sb.append(".into(").append(recRef(r.into())).append(")");
+        } else {
+            // No explicit INTO — read into the FD's associated record
+            String fdRecord = findRecordForFile(r.fileName());
+            if (fdRecord != null) {
+                sb.append(".into(").append(toJavaFieldName(fdRecord)).append(")");
+            }
         }
         line(sb.toString());
         if (!r.atEnd().isEmpty()) {
