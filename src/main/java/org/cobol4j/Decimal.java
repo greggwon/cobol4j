@@ -109,6 +109,32 @@ public final class Decimal implements Comparable<Decimal> {
     }
 
     /**
+     * Create from an unscaled value with a decimal point position.
+     * The {@code decimals} parameter specifies how many digits from the right
+     * are after the decimal point — exactly how COBOL's implied decimal (V) works.
+     * <pre>{@code
+     * Decimal.of(1999, 2)    // 19.99
+     * Decimal.of(5, 2)       // 0.05
+     * Decimal.of(500, 2)     // 5.00
+     * Decimal.of(42, 0)      // 42
+     * Decimal.of(19999L, 3)  // 19.999
+     * }</pre>
+     */
+    public static Decimal of(short units, int decimals) {
+        return wrap(BigDecimal.valueOf(units, decimals));
+    }
+
+    /** @see #of(short, int) */
+    public static Decimal of(int units, int decimals) {
+        return wrap(BigDecimal.valueOf(units, decimals));
+    }
+
+    /** @see #of(short, int) */
+    public static Decimal of(long units, int decimals) {
+        return wrap(BigDecimal.valueOf(units, decimals));
+    }
+
+    /**
      * Wrap an existing BigDecimal. Use when you already have a BigDecimal
      * from a trusted source (e.g., JDBC ResultSet). The value is NOT
      * constructed from a double.

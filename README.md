@@ -65,12 +65,19 @@ designed to prevent.
 cobol4j eliminates this risk entirely. **The `Decimal` class is the only numeric value
 type in the public API.** There is no `BigDecimal` parameter or return type anywhere.
 There is no `float` or `double` parameter anywhere. `Decimal` can only be constructed
-from `String` or `long` — both exact representations:
+from `String`, `long`, or an unscaled integer with a decimal point position — all
+exact representations:
 
 ```java
-Decimal price = Decimal.of("19.99");   // exact — the only way to create a value
+Decimal price = Decimal.of("19.99");   // exact — from string
 Decimal qty   = Decimal.of(5);         // exact — integer literal
 Decimal total = price.multiply(qty);   // 99.95 — exact
+
+// Implied decimal — like COBOL's PIC V clause
+// The second parameter is how many digits from the right are after the decimal point
+Decimal amt   = Decimal.of(1999, 2);   // 19.99 — unscaled 1999, 2 decimal places
+Decimal tax   = Decimal.of(5, 2);      // 0.05  — unscaled 5, 2 decimal places
+Decimal rate  = Decimal.of(19999L, 3); // 19.999
 
 // These don't exist:
 // Decimal.of(0.1)      — NO double constructor
