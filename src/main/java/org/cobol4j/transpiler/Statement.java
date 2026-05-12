@@ -138,7 +138,10 @@ public sealed interface Statement {
     }
 
     record Open(String mode, String fileName) implements Statement {}
-    record Close(String fileName) implements Statement {}
+    record Close(List<String> fileNames) implements Statement {
+        /** Single-file convenience constructor. */
+        public Close(String fileName) { this(List.of(fileName)); }
+    }
     record Read(String fileName, String into, List<Statement> atEnd,
                 List<Statement> notAtEnd) implements Statement {}
     record Write(String recordName, String from, int advanceLines) implements Statement {

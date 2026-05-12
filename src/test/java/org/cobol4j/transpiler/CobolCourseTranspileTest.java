@@ -59,19 +59,8 @@ class CobolCourseTranspileTest {
      * Key: filename; Value: short description of the expected failure.
      * Remove entries as fixes land — the test will catch regressions.
      */
-    private static final Map<String, String> EXPECTED_FAILURES = Map.ofEntries(
-        // ── Remaining transpiler issues ────────────────────────
-        Map.entry("CBL0009.cobol",  "Source uses TLIMIT but field is TLIMITED — COBOL partial-name matching"),
-        Map.entry("SRCHBIN.cobol",  "SEARCH ALL — paragraph names after SEARCH consumed as statements"),
-        Map.entry("SRCHSER.cobol",  "SEARCH WHEN — string literal in condition not handled by readOperand"),
-        Map.entry("EMPPAY.CBL",     "Leading-decimal literals (.25) and nested ELSE IF without END-IF"),
-        // ── DB2 programs — session variable scoping ───────────
-        Map.entry("CBLDB21.cbl",    "EXEC SQL — generated code references session not in scope"),
-        Map.entry("CBLDB22.cbl",    "EXEC SQL — generated code references session not in scope"),
-        Map.entry("CBLDB23.cbl",    "EXEC SQL — generated code references session not in scope"),
-        // ── Source program bugs (typos in IBM course materials) ──
-        Map.entry("CBL0002.cobol",  "Source typo: WRITE PRINT-REX but record is PRINT-REC"),
-        Map.entry("CBL0012.cobol",  "Source typo: FUNCTION CURRENT-DATA should be CURRENT-DATE")
+    private static final Map<String, String> EXPECTED_FAILURES = Map.of(
+        "CBL0009.cobol", "Source uses TLIMIT but field is TLIMITED — fix: rename reference to match field name"
     );
 
     @TestFactory
@@ -125,15 +114,12 @@ class CobolCourseTranspileTest {
                     diag.warnings().forEach(w -> System.out.println("  " + w));
                 }
 
-                // If we expected failure but transpilation succeeded, flag it
-                if (expectedFail) {
-                    System.out.println("FIXED! " + fileName
-                        + " now transpiles — remove from EXPECTED_FAILURES");
-                }
-
                 // Try to compile the generated Java
                 JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
-                if (compiler == null) return;
+                if (compiler == null) {
+                    if (expectedFail) return; // can't verify compilation
+                    return;
+                }
 
                 Path tmpDir = Files.createTempDirectory("course-" + fileName);
                 try {
@@ -158,7 +144,21 @@ class CobolCourseTranspileTest {
                             null, fm.getJavaFileObjects(javaFile.toFile()));
 
                         boolean compiled = task.call();
-                        if (!compiled && !expectedFail) {
+
+                        if (compiled && expectedFail) {
+                            System.out.println("FIXED! " + path
+                                + " now transpiles AND compiles — remove from EXPECTED_FAILURES");
+                        } else if (!compiled && expectedFail) {
+                            StringBuilder info = new StringBuilder();
+                            for (var d : compileDiag.getDiagnostics()) {
+                                info.append("    line ").append(d.getLineNumber())
+                                    .append(": ").append(d.getMessage(null)).append("\n");
+                            }
+                            System.out.println("EXPECTED FAIL (compile): " + path
+                                + "\n  Reason: " + EXPECTED_FAILURES.get(fileName)
+                                + "\n" + info);
+                        } else if (!compiled) {
+                            // Unexpected compile failure
                             StringBuilder errors = new StringBuilder();
                             errors.append("Generated Java doesn't compile\n");
                             errors.append("  COBOL source: ").append(path).append("\n");
@@ -168,7 +168,6 @@ class CobolCourseTranspileTest {
                                 errors.append("    line ").append(d.getLineNumber())
                                       .append(": ").append(d.getMessage(null)).append("\n");
                             }
-                            // Show the failing lines from generated source
                             String[] lines = java.split("\n");
                             for (var d : compileDiag.getDiagnostics()) {
                                 long lineNo = d.getLineNumber();

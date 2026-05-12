@@ -45,12 +45,30 @@ public final class JavaEmitter {
                               boolean isGroup, boolean isCondition) {}
 
     private int fillerCounter = 0;
+    private int groupDepth = 0;
+    private final boolean usesSQL;
 
     private JavaEmitter(CobolProgram program, TranspileDiagnostics diag) {
         this.program = program;
         this.className = toJavaClassName(program.programId());
         this.diag = diag;
         this.symbolTable = buildSymbolTable();
+        // Check if any paragraph contains EXEC SQL
+        this.usesSQL = program.paragraphs().stream()
+            .flatMap(p -> p.statements().stream())
+            .anyMatch(s -> containsSQL(s));
+    }
+
+    private static boolean containsSQL(Statement s) {
+        if (s instanceof Statement.ExecSql) return true;
+        if (s instanceof Statement.If i) {
+            return i.thenBlock().stream().anyMatch(JavaEmitter::containsSQL)
+                || i.elseBlock().stream().anyMatch(JavaEmitter::containsSQL);
+        }
+        if (s instanceof Statement.InlinePerform ip) {
+            return ip.body().stream().anyMatch(JavaEmitter::containsSQL);
+        }
+        return false;
     }
 
     /** Build a symbol table from all DATA DIVISION entries. */
@@ -76,6 +94,10 @@ public final class JavaEmitter {
                 // Register condition names
                 for (CobolProgram.Condition88 cond : e.conditions()) {
                     table.put(cond.name(), new FieldInfo(cond.name(), recName, false, false, true));
+                }
+                // Register INDEXED BY names — they're numeric fields owned by this record
+                for (String idx : e.indexedBy()) {
+                    table.put(idx, new FieldInfo(idx, recName, true, false, false));
                 }
             }
         }
@@ -155,6 +177,12 @@ public final class JavaEmitter {
         line("import org.cobol4j.Search;");
         line("import org.cobol4j.CobolSort;");
         line("import org.cobol4j.interop.SystemCall;");
+        if (usesSQL) {
+            line("import org.cobol4j.ConnectionFactory;");
+            line("import org.cobol4j.SqlSession;");
+            line("import org.cobol4j.CobolSql;");
+            line("import org.cobol4j.SqlCursor;");
+        }
         line("");
     }
 
@@ -172,6 +200,20 @@ public final class JavaEmitter {
         line("}");
         line("private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(LOGGER_NAME);");
         line("private final SystemCall sys = SystemCall.defaultInstance();");
+        if (usesSQL) {
+            line("");
+            line("// ── Database connection (configure via system properties) ──");
+            line("private final ConnectionFactory dbFactory = ConnectionFactory.jdbc(");
+            line("    System.getProperty(\"cobol4j.db.url\", \"jdbc:h2:mem:default;DB_CLOSE_DELAY=-1\"),");
+            line("    System.getProperty(\"cobol4j.db.user\", \"\"),");
+            line("    System.getProperty(\"cobol4j.db.password\", \"\"));");
+            line("private final SqlSession session = SqlSession.from(dbFactory);");
+            line("private final CobolSql sql = session.sql();");
+            // Emit DECLARE CURSOR statements from DATA DIVISION as class fields
+            for (String declSql : program.dataLevelSql()) {
+                emitExecSqlDeclareCursorAsField(declSql);
+            }
+        }
         line("");
     }
 
@@ -200,14 +242,40 @@ public final class JavaEmitter {
             line("");
             for (CobolProgram.FileBinding fb : program.fileBindings()) {
                 String fileVar = toJavaFieldName(fb.fileName());
-                String recVar = toJavaFieldName(fb.recordName());
+                // Look up the SELECT entry for this file
+                CobolProgram.FileControl fc = findFileControl(fb.fileName());
+
+                // Determine file type from ORGANIZATION
+                String fileType = "sequential";
+                if (fc != null && fc.organization() != null
+                    && fc.organization().equalsIgnoreCase("INDEXED")) {
+                    fileType = "indexed";
+                }
+
                 StringBuilder sb = new StringBuilder();
                 sb.append("private CobolFile ").append(fileVar)
-                  .append(" = CobolFile.sequential(\"").append(fb.fileName()).append("\")");
+                  .append(" = CobolFile.").append(fileType)
+                  .append("(\"").append(fb.fileName()).append("\")");
+
+                // ASSIGN TO — map to system property with default
+                if (fc != null && fc.assignTo() != null) {
+                    String assign = fc.assignTo();
+                    sb.append("\n").append("    ".repeat(indent + 1))
+                      .append(".assignTo(System.getProperty(\"cobol4j.file.")
+                      .append(assign).append("\", \"").append(assign).append(".dat\"))");
+                }
+
                 if (fb.recordSize() > 0) {
                     sb.append("\n").append("    ".repeat(indent + 1))
                       .append(".recordSize(").append(fb.recordSize()).append(")");
                 }
+
+                // RECORD KEY for indexed files
+                if (fc != null && fc.recordKey() != null) {
+                    sb.append("\n").append("    ".repeat(indent + 1))
+                      .append(".recordKey(\"").append(fc.recordKey()).append("\")");
+                }
+
                 sb.append("\n").append("    ".repeat(indent + 1)).append(".build();");
                 line(sb.toString());
                 line("");
@@ -261,28 +329,37 @@ public final class JavaEmitter {
                     childEnd++;
                 }
 
+                String gVar = "g" + (groupDepth > 0 ? groupDepth : "");
+                groupDepth++;
                 if (entry.redefines() != null) {
-                    // REDEFINES — overlay on existing field
-                    line(".redefines(\"" + entry.redefines() + "\", \"" + entry.name() + "\", g -> g");
+                    line(".redefines(\"" + entry.redefines() + "\", \"" + entry.name() + "\", " + gVar + " -> " + gVar);
                     indent++;
                     emitDataEntries(entries, childStart, childEnd);
                     indent--;
                     line(")");
                 } else {
-                    // Regular group
-                    line(".group(\"" + entry.name() + "\", g -> g");
+                    line(".group(\"" + entry.name() + "\", " + gVar + " -> " + gVar);
                     indent++;
                     emitDataEntries(entries, childStart, childEnd);
                     indent--;
                     line(")");
                 }
+                groupDepth--;
                 if (entry.occurs() > 0) {
                     line(".occurs(" + entry.occurs() + ")");
+                }
+                // Emit INDEXED BY fields as separate pic entries in the same record
+                for (String idx : entry.indexedBy()) {
+                    line(".pic(\"" + idx + "\", \"9(4)\").comp().value(\"0\")");
                 }
 
                 i = childEnd;
             } else {
                 emitElementaryEntry(entry);
+                // INDEXED BY on elementary OCCURS fields
+                for (String idx : entry.indexedBy()) {
+                    line(".pic(\"" + idx + "\", \"9(4)\").comp().value(\"0\")");
+                }
                 i++;
             }
         }
@@ -433,7 +510,9 @@ public final class JavaEmitter {
         else if (stmt instanceof Statement.Display d) emitDisplay(d);
         else if (stmt instanceof Statement.Accept a) emitAccept(a);
         else if (stmt instanceof Statement.Open o) line("ctx.open(" + toJavaFieldName(o.fileName()) + ", CobolFile.OpenMode." + o.mode().toUpperCase().replace("-", "") + ");");
-        else if (stmt instanceof Statement.Close c) line("ctx.close(" + toJavaFieldName(c.fileName()) + ");");
+        else if (stmt instanceof Statement.Close c) {
+            for (String f : c.fileNames()) line("ctx.close(" + toJavaFieldName(f) + ");");
+        }
         else if (stmt instanceof Statement.Read r) emitRead(r);
         else if (stmt instanceof Statement.Write w) emitWrite(w);
         else if (stmt instanceof Statement.GoTo g) line("ctx.goTo(\"" + g.paragraph() + "\");");
@@ -978,6 +1057,14 @@ public final class JavaEmitter {
 
     /** Find the file variable name associated with a record name. */
     /** Check if a name is a top-level (01/77) record name, not a field within a record. */
+    /** Find the SELECT/FILE-CONTROL entry for a given file name. */
+    private CobolProgram.FileControl findFileControl(String fileName) {
+        for (CobolProgram.FileControl fc : program.fileControls()) {
+            if (fc.fileName().equalsIgnoreCase(fileName)) return fc;
+        }
+        return null;
+    }
+
     private boolean isRecordName(String name) {
         List<RecordGroup> groups = groupByLevel01();
         return groups.stream().anyMatch(g -> g.name.equalsIgnoreCase(name));
@@ -1118,21 +1205,38 @@ public final class JavaEmitter {
     }
 
     /** DECLARE cursor-name CURSOR FOR SELECT ... */
+    /** Emit DECLARE CURSOR from DATA DIVISION as a class-level field. */
+    private void emitExecSqlDeclareCursorAsField(String sql) {
+        String[] parts = parseCursorDeclaration(sql);
+        if (parts != null) {
+            line("private final SqlCursor " + toJavaFieldName(parts[0])
+                + " = sql.declareCursor(\"" + parts[0] + "\", \""
+                + escapeJavaString(parts[1]) + "\");");
+        }
+    }
+
+    /** Emit DECLARE CURSOR from PROCEDURE DIVISION as a local variable. */
     private void emitExecSqlDeclareCursor(String sql) {
-        // Extract cursor name and the SELECT statement
-        // Find " CURSOR " as a standalone keyword (not part of a name like CUST-CURSOR)
+        String[] parts = parseCursorDeclaration(sql);
+        if (parts != null) {
+            line("SqlCursor " + toJavaFieldName(parts[0])
+                + " = sql.declareCursor(\"" + parts[0] + "\", \""
+                + escapeJavaString(parts[1]) + "\");");
+        }
+    }
+
+    /** Extract cursor name and SELECT from a DECLARE CURSOR statement. Returns [name, selectSql]. */
+    private String[] parseCursorDeclaration(String sql) {
         String upper = sql.toUpperCase();
         int declareEnd = upper.indexOf(" CURSOR ");
         if (declareEnd < 0) declareEnd = upper.indexOf(" CURSOR");
-        String cursorName = sql.substring(8, declareEnd).trim(); // between "DECLARE " and " CURSOR"
+        if (declareEnd < 0) return null;
+        String cursorName = sql.substring(8, declareEnd).trim();
         int forIdx = upper.indexOf(" FOR ", declareEnd);
         String selectSql = forIdx >= 0 ? sql.substring(forIdx + 5).trim() : "";
-
         List<String> inputVars = new ArrayList<>();
         selectSql = extractAndReplaceHostVars(selectSql, inputVars);
-
-        line("SqlCursor " + toJavaFieldName(cursorName) + " = sql.declareCursor(\""
-            + cursorName + "\", \"" + escapeJavaString(selectSql) + "\");");
+        return new String[]{cursorName, selectSql};
     }
 
     /** OPEN cursor-name */
@@ -1713,9 +1817,16 @@ public final class JavaEmitter {
 
             // Figurative constants in comparisons
             if (right instanceof Expr.Figurative fig && leftFieldName != null) {
+                // Use emitExpr for implicit registers, recRef for normal fields
+                String leftVal = implicitRegister(leftFieldName) != null
+                    ? emitExpr(left)
+                    : recRef(leftFieldName) + ".getDecimal(\"" + leftFieldName + "\")";
+                String leftStr = implicitRegister(leftFieldName) != null
+                    ? emitExpr(left) + ".toString()"
+                    : recRef(leftFieldName) + ".getString(\"" + leftFieldName + "\").trim()";
                 return switch (fig.name()) {
-                    case "SPACES" -> prefix + recRef(leftFieldName) + ".getString(\"" + leftFieldName + "\").trim().isEmpty()";
-                    case "ZEROS" -> prefix + recRef(leftFieldName) + ".getDecimal(\"" + leftFieldName + "\").isZero()";
+                    case "SPACES" -> prefix + leftStr + ".isEmpty()";
+                    case "ZEROS" -> prefix + leftVal + ".isZero()";
                     case "HIGH-VALUES" -> prefix + "java.util.Arrays.equals(" + recRef(leftFieldName)
                         + ".getBytes(\"" + leftFieldName + "\"), new byte[]{(byte)0xFF})";
                     case "LOW-VALUES" -> prefix + "java.util.Arrays.equals(" + recRef(leftFieldName)

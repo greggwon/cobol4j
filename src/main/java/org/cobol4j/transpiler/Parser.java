@@ -33,6 +33,7 @@ public final class Parser {
     private final List<Token> tokens;
     private final TranspileDiagnostics diag;
     private int pos;
+    private final List<String> dataLevelSql = new ArrayList<>();
 
     private Parser(List<Token> tokens, TranspileDiagnostics diag) {
         this.tokens = tokens;
@@ -69,15 +70,14 @@ public final class Parser {
         List<CobolProgram.DataEntry> dataEntries = new ArrayList<>();
         List<CobolProgram.Paragraph> paragraphs = new ArrayList<>();
         List<CobolProgram.FileBinding> fileBindings = new ArrayList<>();
+        List<CobolProgram.FileControl> fileControls = new ArrayList<>();
 
         // Parse divisions in order
         if (matchWord("IDENTIFICATION")) {
             programId = parseIdentificationDivision();
         }
         if (matchWord("ENVIRONMENT")) {
-            diag.info("parser", current().line(), "ENVIRONMENT DIVISION",
-                "Environment Division skipped — file assignments must be configured in Java code.");
-            skipDivision();
+            fileControls = parseEnvironmentDivision();
         }
         if (matchWord("DATA")) {
             dataEntries = parseDataDivision(fileBindings);
@@ -86,7 +86,7 @@ public final class Parser {
             paragraphs = parseProcedureDivision();
         }
 
-        return new CobolProgram(programId, dataEntries, paragraphs, fileBindings);
+        return new CobolProgram(programId, dataEntries, paragraphs, fileBindings, fileControls, dataLevelSql);
     }
 
     // ── IDENTIFICATION DIVISION ─────────────────────────────────────
@@ -106,6 +106,99 @@ public final class Parser {
             advance();
         }
         return id;
+    }
+
+    // ── ENVIRONMENT DIVISION ──────────────────────────────────────────
+
+    /**
+     * Parse the ENVIRONMENT DIVISION — extracts FILE-CONTROL SELECT entries.
+     * <p>
+     * The ENVIRONMENT DIVISION maps logical file names to external resources.
+     * In mainframe COBOL, ASSIGN TO names are resolved by JCL DD statements.
+     * In cobol4j, they map to system properties:
+     * {@code System.getProperty("cobol4j.file.PRTLINE", "PRTLINE.dat")}
+     */
+    private List<CobolProgram.FileControl> parseEnvironmentDivision() {
+        expect("DIVISION");
+        consumePeriod();
+        List<CobolProgram.FileControl> fileControls = new ArrayList<>();
+
+        while (!atEnd() && !peek("DATA") && !peek("PROCEDURE")) {
+            if (matchWord("INPUT-OUTPUT")) {
+                consumeIf("SECTION");
+                consumePeriod();
+                continue;
+            }
+            if (matchWord("FILE-CONTROL")) {
+                consumePeriod();
+                continue;
+            }
+            if (matchWord("SELECT")) {
+                fileControls.add(parseSelectEntry());
+                continue;
+            }
+            // Skip other ENVIRONMENT DIVISION content
+            // (CONFIGURATION SECTION, SPECIAL-NAMES, etc.)
+            advance();
+        }
+        return fileControls;
+    }
+
+    /**
+     * Parse a SELECT ... ASSIGN TO entry with optional clauses.
+     * <pre>
+     * SELECT file-name ASSIGN TO external-name
+     *     [ORGANIZATION IS {SEQUENTIAL|INDEXED|RELATIVE}]
+     *     [ACCESS MODE IS {SEQUENTIAL|RANDOM|DYNAMIC}]
+     *     [FILE STATUS IS status-field]
+     *     [RECORD KEY IS key-field].
+     * </pre>
+     */
+    private CobolProgram.FileControl parseSelectEntry() {
+        String fileName = current().value(); advance();
+        String assignTo = null;
+        String organization = null;
+        String accessMode = null;
+        String fileStatus = null;
+        String recordKey = null;
+
+        // Parse clauses until period
+        while (!atEnd() && !atPeriod()) {
+            if (matchWord("ASSIGN")) {
+                consumeIf("TO");
+                if (current().type() == Token.Type.STRING) {
+                    assignTo = current().value(); advance();
+                } else {
+                    assignTo = current().value(); advance();
+                }
+            } else if (matchWord("ORGANIZATION")) {
+                consumeIf("IS");
+                organization = current().value(); advance();
+            } else if (matchWord("ACCESS")) {
+                consumeIf("MODE");
+                consumeIf("IS");
+                accessMode = current().value(); advance();
+            } else if (matchWord("FILE")) {
+                if (matchWord("STATUS")) {
+                    consumeIf("IS");
+                    fileStatus = current().value(); advance();
+                }
+            } else if (matchWord("RECORD")) {
+                if (matchWord("KEY")) {
+                    consumeIf("IS");
+                    recordKey = current().value(); advance();
+                }
+            } else if (matchWord("ALTERNATE")) {
+                // ALTERNATE RECORD KEY IS field — skip for now
+                consumeIf("RECORD"); consumeIf("KEY"); consumeIf("IS");
+                if (!atEnd() && !atPeriod()) advance();
+            } else {
+                advance(); // skip unrecognized clause
+            }
+        }
+        consumePeriod();
+        return new CobolProgram.FileControl(fileName, assignTo, organization,
+                                             accessMode, fileStatus, recordKey);
     }
 
     // ── DATA DIVISION ───────────────────────────────────────────────
@@ -129,13 +222,26 @@ public final class Parser {
                 continue;
             }
 
-            // Skip EXEC SQL blocks in WORKING-STORAGE (e.g., DECLARE TABLE, INCLUDE SQLCA)
+            // EXEC SQL blocks in WORKING-STORAGE
+            // DECLARE CURSOR → captured as data-level SQL for class field emission
+            // DECLARE TABLE, INCLUDE SQLCA → skipped (informational only)
             if (peek("EXEC")) {
                 advance(); // EXEC
                 if (matchWord("SQL")) {
-                    while (!atEnd() && !peek("END-EXEC")) advance();
+                    StringBuilder sql = new StringBuilder();
+                    while (!atEnd() && !peek("END-EXEC")) {
+                        sql.append(current().value()).append(" ");
+                        advance();
+                    }
                     matchWord("END-EXEC");
                     consumeStatementEnd();
+                    String sqlText = sql.toString().trim();
+                    if (sqlText.toUpperCase().startsWith("DECLARE")
+                        && sqlText.toUpperCase().contains("CURSOR")) {
+                        // Store as a synthetic data entry — the emitter will generate a class field
+                        dataLevelSql.add(sqlText);
+                    }
+                    // DECLARE TABLE, INCLUDE — just skip
                     continue;
                 }
             }
@@ -332,16 +438,9 @@ public final class Parser {
 
         CobolProgram.DataEntry entry = new CobolProgram.DataEntry(
             level, name, pic, usage, value, redefines, occurs, dependingOn,
-            conditions, signClause, isGlobal, isExternal);
+            conditions, signClause, isGlobal, isExternal, indexedByNames);
 
-        // INDEXED BY creates synthetic index fields at the same level
-        List<CobolProgram.DataEntry> result = new ArrayList<>();
-        result.add(entry);
-        for (String idxName : indexedByNames) {
-            result.add(new CobolProgram.DataEntry(
-                level, idxName, "9(4)", "COMP", "0", null, 0, null, List.of()));
-        }
-        return result;
+        return List.of(entry);
     }
 
     /**
@@ -470,6 +569,18 @@ public final class Parser {
     }
 
     private String parseValueLiteral() {
+        // Handle signed numeric literals: +1320, -5
+        if (current().type() == Token.Type.PLUS || current().type() == Token.Type.MINUS) {
+            String sign = current().type() == Token.Type.MINUS ? "-" : "";
+            advance(); // consume sign
+            if (current().type() == Token.Type.NUMBER) {
+                String val = sign + current().value();
+                advance();
+                return val;
+            }
+            // Sign without number — unusual, return the sign
+            return sign;
+        }
         Token t = current();
         advance();
         if (t.type() == Token.Type.STRING) return "\"" + t.value() + "\"";
@@ -809,21 +920,21 @@ public final class Parser {
         advance(); // consume IF
         Statement.Condition cond = parseCondition();
         consumeIf("THEN");
-        List<Statement> thenBlock = new ArrayList<>();
-        List<Statement> elseBlock = new ArrayList<>();
 
-        while (!atEnd() && !peek("ELSE") && !peek("END-IF")) {
-            Statement s = parseStatement();
-            if (s != null) thenBlock.add(s);
-        }
+        List<Statement> thenBlock = parseImperativeUntil("ELSE", "END-IF");
+        List<Statement> elseBlock = List.of();
+
         if (matchWord("ELSE")) {
-            while (!atEnd() && !peek("END-IF")) {
-                Statement s = parseStatement();
-                if (s != null) elseBlock.add(s);
+            // ELSE IF is a nested IF — parse it as a single statement in the else block
+            if (peek("IF")) {
+                Statement nestedIf = parseIf();
+                elseBlock = List.of(nestedIf);
+            } else {
+                elseBlock = parseImperativeUntil("END-IF");
             }
         }
-        matchWord("END-IF");
-        consumeStatementEnd();
+
+        consumeScope("END-IF");
         return new Statement.If(cond, thenBlock, elseBlock);
     }
 
@@ -1103,34 +1214,29 @@ public final class Parser {
 
     private Statement parseClose() {
         advance(); // consume CLOSE
-        String file = current().value(); advance();
+        List<String> files = new ArrayList<>();
+        while (!atEnd() && !atPeriod() && !isVerb(current().value())
+               && !isScopeTerminator(current().value())) {
+            files.add(current().value());
+            advance();
+        }
         consumeStatementEnd();
-        return new Statement.Close(file);
+        return new Statement.Close(files);
     }
 
     private Statement parseRead() {
         advance(); // consume READ
         String file = current().value(); advance();
         String into = null;
-        List<Statement> atEnd = new ArrayList<>();
-        List<Statement> notAtEnd = new ArrayList<>();
+
+        // Optional RECORD keyword: READ file RECORD INTO ...
+        consumeIf("RECORD");
 
         if (matchWord("INTO")) { into = current().value(); advance(); }
-        if (matchWord("AT") && matchWord("END")) {
-            while (!atEnd() && !peek("NOT") && !peek("END-READ") && !atPeriod()) {
-                Statement s = parseStatement();
-                if (s != null) atEnd.add(s);
-            }
-        }
-        if (matchWord("NOT") && matchWord("AT") && matchWord("END")) {
-            while (!atEnd() && !peek("END-READ") && !atPeriod()) {
-                Statement s = parseStatement();
-                if (s != null) notAtEnd.add(s);
-            }
-        }
-        matchWord("END-READ");
-        consumeStatementEnd();
-        return new Statement.Read(file, into, atEnd, notAtEnd);
+
+        var atEndPhrase = parseAtEndPhrase();
+        consumeScope("END-READ");
+        return new Statement.Read(file, into, atEndPhrase.get(0), atEndPhrase.get(1));
     }
 
     private Statement parseWrite() {
@@ -1440,29 +1546,28 @@ public final class Parser {
         boolean searchAll = matchWord("ALL");
         String table = current().value(); advance();
 
-        // SEARCH table VARYING index-name — consume the VARYING clause
+        // SEARCH table VARYING index-name
         if (matchWord("VARYING")) {
-            advance(); // consume the index name (used by runtime, not emitted separately)
+            advance(); // consume the index name
         }
 
-        List<Statement> atEnd = new ArrayList<>();
+        List<Statement> atEndStmts = new ArrayList<>();
         List<Statement.SearchWhen> whenClauses = new ArrayList<>();
 
-        if (matchWord("AT") && matchWord("END")) {
-            while (!atEnd() && !peek("WHEN") && !peek("END-SEARCH") && !atPeriod()) {
-                Statement s = parseStatement();
-                if (s != null) atEnd.add(s);
-            }
+        // AT END imperative-phrase
+        if (matchWord("AT")) {
+            matchWord("END");
+            atEndStmts = parseImperativeUntil("WHEN", "END-SEARCH");
         }
 
+        // WHEN condition imperative-phrase (repeatable)
         while (matchWord("WHEN")) {
-            String left = readOperand(); // handles FIELD(subscript)
+            String left = readOperand();
             String right = null;
             if (matchWord("=") || matchWord("EQUAL")) {
                 consumeIf("TO");
-                // Right side can be a field, number literal, or string literal
                 if (current().type() == Token.Type.NUMBER) {
-                    right = "\"" + current().value() + "\""; // wrap as literal
+                    right = "\"" + current().value() + "\"";
                     advance();
                 } else if (current().type() == Token.Type.STRING) {
                     right = "\"" + current().value() + "\"";
@@ -1471,17 +1576,12 @@ public final class Parser {
                     right = readOperand();
                 }
             }
-            List<Statement> body = new ArrayList<>();
-            while (!atEnd() && !peek("WHEN") && !peek("END-SEARCH") && !atPeriod()) {
-                Statement s = parseStatement();
-                if (s != null) body.add(s);
-            }
+            List<Statement> body = parseImperativeUntil("WHEN", "END-SEARCH");
             whenClauses.add(new Statement.SearchWhen(left, right, body));
         }
 
-        matchWord("END-SEARCH");
-        consumeStatementEnd();
-        return new Statement.SearchStmt(table, whenClauses, atEnd);
+        consumeScope("END-SEARCH");
+        return new Statement.SearchStmt(table, whenClauses, atEndStmts);
     }
 
     // ── SORT ────────────────────────────────────────────────────
@@ -1809,8 +1909,13 @@ public final class Parser {
             return new Statement.Condition.ConditionName(condName, negated);
         }
 
+        // NOT= means negated equality, NOT> means negated greater-than, etc.
+        boolean operatorNegated = operator.startsWith("NOT");
+        String baseOp = operatorNegated ? operator.substring(3) : operator;
+        boolean finalNegated = negated ^ operatorNegated; // XOR: two negations cancel
+
         Expr rightExpr = parseExpr();
-        return new Statement.Condition.Simple(leftExpr, operator, rightExpr, negated);
+        return new Statement.Condition.Simple(leftExpr, baseOp, rightExpr, finalNegated);
     }
 
     private Statement.Condition negateCondition(Statement.Condition cond) {
@@ -1854,34 +1959,10 @@ public final class Parser {
     }
 
     private String parseRelationalOperator() {
-        if (matchWord("EQUAL") || matchWord("=")) {
-            consumeIf("TO");
-            return "=";
-        } else if (matchWord("GREATER")) {
-            consumeIf("THAN");
-            if (matchWord("OR")) {
-                consumeIf("EQUAL");
-                consumeIf("TO");
-                return ">=";
-            }
-            return ">";
-        } else if (matchWord("LESS")) {
-            consumeIf("THAN");
-            if (matchWord("OR")) {
-                consumeIf("EQUAL");
-                consumeIf("TO");
-                return "<=";
-            }
-            return "<";
-        } else if (matchWord(">=")) {
-            return ">=";
-        } else if (matchWord("<=")) {
-            return "<=";
-        } else if (matchWord(">")) {
-            return ">";
-        } else if (matchWord("<")) {
-            return "<";
-        } else if (current().type() == Token.Type.GREATER) {
+        // Symbol tokens: >, <, = (and compound >= <=)
+        // Check these FIRST because matchWord(">") would consume > without
+        // checking for the following = that makes >=
+        if (current().type() == Token.Type.GREATER) {
             advance();
             if (current().type() == Token.Type.EQUALS) { advance(); return ">="; }
             return ">";
@@ -1893,33 +1974,64 @@ public final class Parser {
             advance();
             return "=";
         }
+        // NOT = (not equal), NOT > (not greater), NOT < (not less)
+        // These are negated comparisons — return the base operator with "!" prefix
+        // so the caller can set the negated flag
+        if (matchWord("NOT")) {
+            if (current().type() == Token.Type.EQUALS) { advance(); return "NOT="; }
+            if (current().type() == Token.Type.GREATER) { advance(); return "NOT>"; }
+            if (current().type() == Token.Type.LESS) { advance(); return "NOT<"; }
+            if (matchWord("EQUAL")) { consumeIf("TO"); return "NOT="; }
+            if (matchWord("GREATER")) { consumeIf("THAN"); return "NOT>"; }
+            if (matchWord("LESS")) { consumeIf("THAN"); return "NOT<"; }
+            // NOT without a following operator — put it back
+            pos--;
+        }
+        // English-word operators: EQUAL, GREATER THAN, LESS THAN, etc.
+        if (matchWord("EQUAL")) {
+            consumeIf("TO");
+            return "=";
+        } else if (matchWord("GREATER")) {
+            consumeIf("THAN");
+            if (matchWord("OR")) {
+                consumeIf("EQUAL"); consumeIf("TO");
+                return ">=";
+            }
+            return ">";
+        } else if (matchWord("LESS")) {
+            consumeIf("THAN");
+            if (matchWord("OR")) {
+                consumeIf("EQUAL"); consumeIf("TO");
+                return "<=";
+            }
+            return "<";
+        }
         return null; // no operator found
     }
 
     // ── ON SIZE ERROR parsing ───────────────────────────────────────
 
     private List<List<Statement>> parseSizeError() {
-        List<Statement> onErr = new ArrayList<>();
-        List<Statement> notErr = new ArrayList<>();
-        if (matchWord("ON") && matchWord("SIZE") && matchWord("ERROR")) {
-            while (!atEnd() && !peek("NOT") && !peek("END-ADD") && !peek("END-SUBTRACT")
-                   && !peek("END-MULTIPLY") && !peek("END-DIVIDE") && !peek("END-COMPUTE")
-                   && !atPeriod()) {
-                Statement s = parseStatement();
-                if (s != null) onErr.add(s);
+        String[] arithScopes = {"END-ADD", "END-SUBTRACT", "END-MULTIPLY",
+                                "END-DIVIDE", "END-COMPUTE"};
+        List<Statement> onErr = List.of();
+        List<Statement> notErr = List.of();
+
+        if (matchWord("ON")) {
+            if (matchWord("SIZE") && matchWord("ERROR")) {
+                String[] bounds = merge(new String[]{"NOT"}, arithScopes);
+                onErr = parseImperativeUntil(bounds);
             }
         }
-        if (matchWord("NOT") && matchWord("ON") && matchWord("SIZE") && matchWord("ERROR")) {
-            while (!atEnd() && !peek("END-ADD") && !peek("END-SUBTRACT")
-                   && !peek("END-MULTIPLY") && !peek("END-DIVIDE") && !peek("END-COMPUTE")
-                   && !atPeriod()) {
-                Statement s = parseStatement();
-                if (s != null) notErr.add(s);
-            }
+        if (peek("NOT")) {
+            advance(); // NOT
+            consumeIf("ON"); consumeIf("SIZE"); consumeIf("ERROR");
+            notErr = parseImperativeUntil(arithScopes);
         }
-        // Consume scope terminators
-        matchWord("END-ADD"); matchWord("END-SUBTRACT");
-        matchWord("END-MULTIPLY"); matchWord("END-DIVIDE"); matchWord("END-COMPUTE");
+        // Consume whichever scope terminator is present
+        for (String s : arithScopes) {
+            if (matchWord(s)) break;
+        }
         return List.of(onErr, notErr);
     }
 
@@ -2161,9 +2273,136 @@ public final class Parser {
     private void consumeIf(String word) { matchWord(word); }
 
     private void consumeStatementEnd() {
-        // In COBOL, statements end at period or before next verb / scope terminator
-        // We opportunistically consume a period if present
         if (atPeriod()) advance();
+    }
+
+    // ── Phrase parsing ─────────────────────────────────────────────
+    //
+    // COBOL verbs contain "imperative phrases" — sub-statement blocks
+    // that are bounded by specific keywords. For example:
+    //   SEARCH table AT END imperative WHEN condition imperative END-SEARCH
+    //   READ file AT END imperative NOT AT END imperative END-READ
+    //   ADD a TO b ON SIZE ERROR imperative NOT ON SIZE ERROR imperative END-ADD
+    //
+    // The phrase parser collects statements until it hits a boundary keyword
+    // or a period. The owning verb parser specifies which keywords are boundaries.
+    // This prevents phrases from consuming past their intended scope.
+
+    /**
+     * Parse imperative statements until one of the boundary keywords is seen,
+     * a period is reached, or end of input. Does NOT consume the boundary or period.
+     */
+    private List<Statement> parseImperativeUntil(String... boundaries) {
+        List<Statement> stmts = new ArrayList<>();
+        while (!atEnd()) {
+            // Check if we've hit a period — the implicit statement/phrase terminator
+            if (atPeriod()) return stmts;
+
+            // Check if current token is one of the boundaries
+            if (current().type() == Token.Type.WORD) {
+                String word = current().value().toUpperCase();
+                for (String b : boundaries) {
+                    if (word.equals(b)) return stmts;
+                }
+                // NOT followed by AT/ON signals a NOT-phrase boundary
+                if (word.equals("NOT") && pos + 1 < tokens.size()) {
+                    String next = tokens.get(pos + 1).value().toUpperCase();
+                    if (next.equals("AT") || next.equals("ON")) return stmts;
+                }
+            }
+
+            // Save position — if parseStatement consumes a period that was
+            // our phrase boundary, we need to detect that and stop
+            int posBefore = pos;
+            try {
+                Statement s = parseStatement();
+                if (s != null) stmts.add(s);
+            } catch (ParseException e) {
+                skipToSyncPoint();
+            }
+
+            // If the statement parser consumed a period (consumeStatementEnd),
+            // we've reached the end of this phrase. The period was the implicit
+            // scope terminator — stop collecting.
+            if (pos > posBefore && pos <= tokens.size()) {
+                // Check if a period was consumed between posBefore and pos
+                for (int i = posBefore; i < pos; i++) {
+                    if (tokens.get(i).type() == Token.Type.PERIOD) {
+                        return stmts;
+                    }
+                }
+            }
+        }
+        return stmts;
+    }
+
+    /**
+     * Consume a scope terminator (END-SEARCH, END-IF, END-READ, etc.)
+     * or a period. In COBOL, every compound statement ends with either
+     * an explicit scope terminator or a period.
+     */
+    private void consumeScope(String scopeTerminator) {
+        if (scopeTerminator != null && matchWord(scopeTerminator)) {
+            consumeStatementEnd(); // optional trailing period
+        }
+        // If no scope terminator was consumed, the period (or end of paragraph)
+        // is the implicit terminator — don't advance past it here, the caller
+        // or parseStatementsUntil will handle it.
+    }
+
+    /**
+     * Parse the ON SIZE ERROR / NOT ON SIZE ERROR phrase pair.
+     * Returns [onSizeError, notOnSizeError].
+     */
+    private List<List<Statement>> parseSizeErrorPhrase() {
+        List<Statement> onErr = List.of();
+        List<Statement> notErr = List.of();
+        if (matchWord("ON") && matchWord("SIZE") && matchWord("ERROR")
+            || (peek("SIZE") && matchWord("SIZE") && matchWord("ERROR"))) {
+            onErr = parseImperativeUntil("NOT", "END-ADD", "END-SUBTRACT",
+                "END-MULTIPLY", "END-DIVIDE", "END-COMPUTE");
+        }
+        if (peek("NOT")) {
+            advance(); // NOT
+            consumeIf("ON"); consumeIf("SIZE"); consumeIf("ERROR");
+            notErr = parseImperativeUntil("END-ADD", "END-SUBTRACT",
+                "END-MULTIPLY", "END-DIVIDE", "END-COMPUTE");
+        }
+        return List.of(onErr, notErr);
+    }
+
+    /**
+     * Parse AT END / NOT AT END phrase pair (for READ, RETURN, SEARCH).
+     */
+    private List<List<Statement>> parseAtEndPhrase(String... extraBoundaries) {
+        List<Statement> atEndStmts = List.of();
+        List<Statement> notAtEndStmts = List.of();
+
+        // Build full boundary list: NOT, END-READ, END-SEARCH, plus extras
+        String[] atEndBounds = merge(
+            new String[]{"NOT", "END-READ", "END-RETURN", "END-SEARCH"},
+            extraBoundaries);
+        String[] notAtEndBounds = merge(
+            new String[]{"END-READ", "END-RETURN", "END-SEARCH"},
+            extraBoundaries);
+
+        if (matchWord("AT")) {
+            matchWord("END");
+            atEndStmts = parseImperativeUntil(atEndBounds);
+        }
+        if (peek("NOT")) {
+            advance(); // NOT
+            consumeIf("AT"); consumeIf("END");
+            notAtEndStmts = parseImperativeUntil(notAtEndBounds);
+        }
+        return List.of(atEndStmts, notAtEndStmts);
+    }
+
+    private static String[] merge(String[] a, String[] b) {
+        String[] result = new String[a.length + b.length];
+        System.arraycopy(a, 0, result, 0, a.length);
+        System.arraycopy(b, 0, result, a.length, b.length);
+        return result;
     }
 
     /**
@@ -2258,8 +2497,8 @@ public final class Parser {
         if (matchWord("INTO")) {
             into = current().value(); advance();
         }
-        var atEnd = parseAtEnd();
-        consumeStatementEnd();
+        var atEnd = parseAtEndPhrase("END-RETURN");
+        consumeScope("END-RETURN");
         return new Statement.ReturnStmt(fileName, into, atEnd.get(0), atEnd.get(1));
     }
 
@@ -2323,24 +2562,6 @@ public final class Parser {
         }
         consumeStatementEnd();
         return new Statement.UseDeclarative(scope, fileName, line);
-    }
-
-    /** Parse AT END / NOT AT END clauses (used by READ, RETURN). */
-    private List<List<Statement>> parseAtEnd() {
-        List<Statement> atEnd = new ArrayList<>();
-        List<Statement> notAtEnd = new ArrayList<>();
-        if (matchWord("AT")) {
-            if (matchWord("END")) {
-                atEnd = parseStatements();
-            }
-        }
-        if (peek("NOT") && peek(1, "AT")) {
-            advance(); // NOT
-            advance(); // AT
-            advance(); // END
-            notAtEnd = parseStatements();
-        }
-        return List.of(atEnd, notAtEnd);
     }
 
     private void skipDivision() {

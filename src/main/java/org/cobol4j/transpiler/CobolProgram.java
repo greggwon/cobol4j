@@ -27,11 +27,21 @@ public record CobolProgram(
     String programId,
     List<DataEntry> dataEntries,
     List<Paragraph> paragraphs,
-    List<FileBinding> fileBindings
+    List<FileBinding> fileBindings,
+    List<FileControl> fileControls,
+    List<String> dataLevelSql       // EXEC SQL DECLARE CURSOR in WORKING-STORAGE
 ) {
-    /** Backward-compatible constructor without fileBindings. */
+    public CobolProgram(String programId, List<DataEntry> dataEntries,
+                        List<Paragraph> paragraphs, List<FileBinding> fileBindings,
+                        List<FileControl> fileControls) {
+        this(programId, dataEntries, paragraphs, fileBindings, fileControls, List.of());
+    }
+    public CobolProgram(String programId, List<DataEntry> dataEntries,
+                        List<Paragraph> paragraphs, List<FileBinding> fileBindings) {
+        this(programId, dataEntries, paragraphs, fileBindings, List.of(), List.of());
+    }
     public CobolProgram(String programId, List<DataEntry> dataEntries, List<Paragraph> paragraphs) {
-        this(programId, dataEntries, paragraphs, List.of());
+        this(programId, dataEntries, paragraphs, List.of(), List.of(), List.of());
     }
 
     /**
@@ -40,6 +50,25 @@ public record CobolProgram(
      * with a 01-level record layout.
      */
     public record FileBinding(String fileName, String recordName, int recordSize) {}
+
+    /**
+     * A SELECT entry from the ENVIRONMENT DIVISION / FILE-CONTROL.
+     * Maps a logical file name to its external assignment and configuration.
+     *
+     * <p>In mainframe COBOL, the ASSIGN TO value is a DD name resolved by JCL.
+     * In cobol4j, it maps to a system property or file path:</p>
+     * <pre>
+     * System.getProperty("cobol4j.file.PRTLINE", "PRTLINE.dat")
+     * </pre>
+     */
+    public record FileControl(
+        String fileName,        // logical name (e.g., "PRINT-LINE")
+        String assignTo,        // external name (e.g., "PRTLINE")
+        String organization,    // SEQUENTIAL, INDEXED, RELATIVE, or null
+        String accessMode,      // SEQUENTIAL, RANDOM, DYNAMIC, or null
+        String fileStatus,      // status variable name, or null
+        String recordKey        // primary key field for INDEXED, or null
+    ) {}
     /**
      * A parsed DATA DIVISION entry (01-level through 88-level).
      */
@@ -53,24 +82,30 @@ public record CobolProgram(
         int occurs,          // 0 = not an array
         String dependingOn,  // null if not OCCURS DEPENDING ON
         List<Condition88> conditions,
-        String signClause,   // null = default TRAILING, e.g. "LEADING", "TRAILING_SEPARATE", "LEADING_SEPARATE"
-        boolean isGlobal,    // GLOBAL clause present
-        boolean isExternal   // EXTERNAL clause present
+        String signClause,   // null = default TRAILING
+        boolean isGlobal,
+        boolean isExternal,
+        List<String> indexedBy  // INDEXED BY names (owned by this OCCURS entry)
     ) {
-        /** Backward-compatible constructor without signClause/global/external. */
         public DataEntry(int level, String name, String pic, String usage,
                          String value, String redefines, int occurs,
                          String dependingOn, List<Condition88> conditions) {
             this(level, name, pic, usage, value, redefines, occurs,
-                 dependingOn, conditions, null, false, false);
+                 dependingOn, conditions, null, false, false, List.of());
         }
-        /** Backward-compatible constructor without global/external. */
         public DataEntry(int level, String name, String pic, String usage,
                          String value, String redefines, int occurs,
                          String dependingOn, List<Condition88> conditions,
                          String signClause) {
             this(level, name, pic, usage, value, redefines, occurs,
-                 dependingOn, conditions, signClause, false, false);
+                 dependingOn, conditions, signClause, false, false, List.of());
+        }
+        public DataEntry(int level, String name, String pic, String usage,
+                         String value, String redefines, int occurs,
+                         String dependingOn, List<Condition88> conditions,
+                         String signClause, boolean isGlobal, boolean isExternal) {
+            this(level, name, pic, usage, value, redefines, occurs,
+                 dependingOn, conditions, signClause, isGlobal, isExternal, List.of());
         }
     }
 

@@ -344,24 +344,25 @@ class TranspilerTest {
 
     @Test
     void transpileDiagnosticsCollectWarnings() {
+        // Use a program with an unknown verb to trigger a warning
         String cobol = """
             IDENTIFICATION DIVISION.
             PROGRAM-ID. DIAG-TEST.
-            ENVIRONMENT DIVISION.
             DATA DIVISION.
             WORKING-STORAGE SECTION.
             01 WS-DATA.
                05 WS-X PIC X(10).
             PROCEDURE DIVISION.
             MAIN-PARA.
+                FROBULATE WS-X.
                 STOP RUN.
             """;
 
         TranspileDiagnostics diag = new TranspileDiagnostics();
         String java = Transpiler.transpile(cobol, diag);
-        assertNotNull(java, "Should succeed (no errors)");
-        // ENVIRONMENT DIVISION skipped = info diagnostic
+        assertNotNull(java, "Should succeed (warnings, not errors)");
         assertFalse(diag.isEmpty(), "Should have at least one diagnostic");
+        assertTrue(diag.hasWarnings(), "Should have warnings for unknown verb");
     }
 
     @Test
