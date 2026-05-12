@@ -129,6 +129,17 @@ public final class Parser {
                 continue;
             }
 
+            // Skip EXEC SQL blocks in WORKING-STORAGE (e.g., DECLARE TABLE, INCLUDE SQLCA)
+            if (peek("EXEC")) {
+                advance(); // EXEC
+                if (matchWord("SQL")) {
+                    while (!atEnd() && !peek("END-EXEC")) advance();
+                    matchWord("END-EXEC");
+                    consumeStatementEnd();
+                    continue;
+                }
+            }
+
             // Check for level number
             if (current().type() == Token.Type.NUMBER) {
                 int level = Integer.parseInt(current().value());
@@ -233,6 +244,7 @@ public final class Parser {
         String signClause = null;
         boolean isGlobal = false;
         boolean isExternal = false;
+        List<String> indexedByNames = new ArrayList<>();
 
         // Parse clauses until period
         while (!atEnd() && !atPeriod()) {
@@ -269,6 +281,25 @@ public final class Parser {
                     dependingOn = current().value();
                     advance();
                 }
+                // ASCENDING/DESCENDING KEY IS field-name (for SEARCH ALL)
+                while (matchWord("ASCENDING") || matchWord("DESCENDING")) {
+                    consumeIf("KEY");
+                    consumeIf("IS");
+                    if (!atEnd() && !atPeriod() && current().type() == Token.Type.WORD) {
+                        advance(); // consume the key field name
+                    }
+                }
+                // INDEXED BY idx-name [idx-name2 ...]
+                if (matchWord("INDEXED")) {
+                    expect("BY");
+                    while (!atEnd() && !atPeriod()
+                           && current().type() == Token.Type.WORD
+                           && !isDataClauseKeyword(current().value())) {
+                        String indexName = current().value();
+                        advance();
+                        indexedByNames.add(indexName);
+                    }
+                }
             } else if (matchWord("GLOBAL")) {
                 isGlobal = true;
                 diag.info("parser", current().line(), "GLOBAL",
@@ -302,7 +333,15 @@ public final class Parser {
         CobolProgram.DataEntry entry = new CobolProgram.DataEntry(
             level, name, pic, usage, value, redefines, occurs, dependingOn,
             conditions, signClause, isGlobal, isExternal);
-        return List.of(entry);
+
+        // INDEXED BY creates synthetic index fields at the same level
+        List<CobolProgram.DataEntry> result = new ArrayList<>();
+        result.add(entry);
+        for (String idxName : indexedByNames) {
+            result.add(new CobolProgram.DataEntry(
+                level, idxName, "9(4)", "COMP", "0", null, 0, null, List.of()));
+        }
+        return result;
     }
 
     /**
@@ -377,6 +416,15 @@ public final class Parser {
         return sb.toString();
     }
 
+    private boolean isDataClauseKeyword(String word) {
+        return switch (word.toUpperCase()) {
+            case "PIC", "PICTURE", "VALUE", "USAGE", "COMP", "COMP-3", "COMP-4", "COMP-5",
+                 "BINARY", "PACKED-DECIMAL", "OCCURS", "REDEFINES", "SIGN", "GLOBAL",
+                 "EXTERNAL", "JUSTIFIED", "JUST", "BLANK", "SYNCHRONIZED", "SYNC" -> true;
+            default -> false;
+        };
+    }
+
     private boolean isPicChar(Token t) {
         if (t.type() == Token.Type.WORD) {
             // PIC characters: S, 9, X, A, V, Z, B, P, N, etc.
@@ -398,6 +446,20 @@ public final class Parser {
         }
         if (t.type() == Token.Type.NUMBER) return true; // digits in PIC
         if (t.type() == Token.Type.LPAREN || t.type() == Token.Type.RPAREN) return true;
+        // Numeric edited PIC: $$,$$$,$$9.99 — commas and periods are part of the mask
+        if (t.type() == Token.Type.COMMA) return true;
+        // A period followed by digits is a decimal point in a PIC, not a sentence terminator
+        if (t.type() == Token.Type.PERIOD) {
+            // Look ahead: if next token continues the PIC (digit, $, Z, etc.), this is a decimal point
+            int next = pos + 1;
+            if (next < tokens.size()) {
+                Token n = tokens.get(next);
+                if (n.type() == Token.Type.NUMBER
+                    || (n.type() == Token.Type.WORD && n.value().matches("[SNXA9VZPB*+\\-$/,0]+"))) {
+                    return true;
+                }
+            }
+        }
         return false;
     }
 
@@ -427,43 +489,102 @@ public final class Parser {
         while (!atEnd() && !atPeriod()) advance();
         consumePeriod();
 
-        List<CobolProgram.Paragraph> paragraphs = new ArrayList<>();
+        // Phase 1: Scan for all paragraph headers and record their token positions.
+        // A paragraph header is a WORD followed by a PERIOD where the WORD is NOT
+        // a recognized verb. This two-pass approach means statement parsing can never
+        // accidentally consume a paragraph name — the boundaries are set before any
+        // statement parsing begins.
+        List<int[]> paragraphRanges = new ArrayList<>(); // [namePos, bodyStart, bodyEnd]
+        List<String> paragraphNames = new ArrayList<>();
 
-        while (!atEnd()) {
-            // A paragraph starts with a WORD followed by a PERIOD
-            if (current().type() == Token.Type.WORD && pos + 1 < tokens.size()
-                && tokens.get(pos + 1).type() == Token.Type.PERIOD) {
-                String name = current().value();
-                advance(); // consume name
-                consumePeriod();
-                List<Statement> stmts = parseStatements();
-                paragraphs.add(new CobolProgram.Paragraph(name, stmts));
+        // A paragraph header is: WORD PERIOD where WORD is NOT a verb and
+        // the WORD appears right after a period (or at start of procedure division).
+        // This "after period" rule prevents tokens inside statements (like RUN in
+        // STOP RUN.) from being mistaken for paragraph names.
+        boolean afterPeriod = true; // start of procedure division counts
+        int scanPos = pos;
+        while (scanPos < tokens.size()) {
+            Token t = tokens.get(scanPos);
+            if (t.type() == Token.Type.EOF) break;
+            if (t.type() == Token.Type.PERIOD) {
+                afterPeriod = true;
+                scanPos++;
+                continue;
+            }
+            if (afterPeriod
+                && t.type() == Token.Type.WORD
+                && scanPos + 1 < tokens.size()
+                && tokens.get(scanPos + 1).type() == Token.Type.PERIOD
+                && !isVerb(t.value())) {
+                // This is a paragraph header
+                paragraphNames.add(t.value());
+                paragraphRanges.add(new int[]{scanPos, scanPos + 2, 0});
+                scanPos += 2;
+                afterPeriod = true; // the period after the name
+                continue;
+            }
+            afterPeriod = false;
+            scanPos++;
+        }
+
+        // Fill in bodyEnd for each paragraph (starts where the next paragraph begins)
+        for (int i = 0; i < paragraphRanges.size(); i++) {
+            if (i + 1 < paragraphRanges.size()) {
+                paragraphRanges.get(i)[2] = paragraphRanges.get(i + 1)[0];
             } else {
-                advance();
+                paragraphRanges.get(i)[2] = tokens.size();
             }
         }
+
+        // Phase 2: Parse statements within each paragraph's bounded token range.
+        List<CobolProgram.Paragraph> paragraphs = new ArrayList<>();
+
+        if (paragraphRanges.isEmpty()) {
+            // No paragraph headers — all statements are in one anonymous paragraph.
+            // Common in simple programs: PROCEDURE DIVISION. DISPLAY "HI". STOP RUN.
+            List<Statement> stmts = parseStatementsUntil(tokens.size());
+            if (!stmts.isEmpty()) {
+                paragraphs.add(new CobolProgram.Paragraph("MAIN", stmts));
+            }
+        } else {
+            // If there are statements before the first paragraph header, collect them
+            int firstParagraphStart = paragraphRanges.get(0)[0];
+            if (pos < firstParagraphStart) {
+                List<Statement> preStmts = parseStatementsUntil(firstParagraphStart);
+                if (!preStmts.isEmpty()) {
+                    paragraphs.add(new CobolProgram.Paragraph("MAIN", preStmts));
+                }
+            }
+
+            for (int i = 0; i < paragraphRanges.size(); i++) {
+                int[] range = paragraphRanges.get(i);
+                pos = range[1]; // bodyStart
+                int bodyEnd = range[2];
+                List<Statement> stmts = parseStatementsUntil(bodyEnd);
+                paragraphs.add(new CobolProgram.Paragraph(paragraphNames.get(i), stmts));
+            }
+        }
+
+        // Advance pos past all tokens
+        pos = tokens.size() - 1;
         return paragraphs;
     }
 
-    private List<Statement> parseStatements() {
+    /**
+     * Parse statements from the current position up to (but not including) endPos.
+     * This bounded parsing ensures statement parsers cannot escape past paragraph
+     * boundaries — the paragraph structure was determined in the scan phase.
+     */
+    private List<Statement> parseStatementsUntil(int endPos) {
         List<Statement> stmts = new ArrayList<>();
-        while (!atEnd()) {
-            // Check if next is a paragraph header (WORD followed by PERIOD at start)
-            if (current().type() == Token.Type.WORD && pos + 1 < tokens.size()
-                && tokens.get(pos + 1).type() == Token.Type.PERIOD
-                && !isVerb(current().value())) {
-                break; // next paragraph starts
-            }
+        while (pos < endPos && !atEnd()) {
+            if (atPeriod()) { advance(); continue; }
             try {
                 Statement stmt = parseStatement();
                 if (stmt != null) stmts.add(stmt);
             } catch (ParseException e) {
-                // Expected parse failure — already reported via diag.
-                // Recover to next sync point and continue.
                 skipToSyncPoint();
             } catch (RuntimeException e) {
-                // Unexpected failure (NPE, index bounds, etc.) — capture it
-                // so the user sees what broke and the parser keeps going.
                 diag.error("parser", current().line(), current().value(),
                     "Internal parser error near '" + current().value()
                     + "': " + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -471,6 +592,11 @@ public final class Parser {
             }
         }
         return stmts;
+    }
+
+    /** Backward-compatible: parse statements until next paragraph or end. */
+    private List<Statement> parseStatements() {
+        return parseStatementsUntil(tokens.size());
     }
 
     private Statement parseStatement() {
@@ -851,11 +977,25 @@ public final class Parser {
     private Statement parsePerform() {
         advance(); // consume PERFORM
 
-        // Check for inline PERFORM (no paragraph name — UNTIL/VARYING/TIMES comes immediately)
-        if (peek("UNTIL") || peek("VARYING")) {
-            return parseInlinePerform();
+        // ── Inline PERFORM UNTIL ... END-PERFORM ───────────────
+        if (peek("UNTIL")) {
+            return parseInlinePerformUntil();
         }
 
+        // ── Inline PERFORM VARYING ... END-PERFORM ─────────────
+        if (peek("VARYING")) {
+            return parseInlinePerformVarying();
+        }
+
+        // ── Inline PERFORM n TIMES ... END-PERFORM ─────────────
+        if (current().type() == Token.Type.NUMBER && peek(1, "TIMES")) {
+            int count = Integer.parseInt(current().value()); advance();
+            advance(); // consume TIMES
+            List<Statement> body = collectInlineBody();
+            return Statement.InlinePerform.times(count, body);
+        }
+
+        // ── Paragraph-based PERFORM ────────────────────────────
         String paragraph = current().value(); advance();
         String thru = null;
         Statement.PerformType type = Statement.PerformType.SIMPLE;
@@ -885,12 +1025,26 @@ public final class Parser {
         return new Statement.Perform(paragraph, thru, type, varying, from, by, until);
     }
 
-    private Statement parseInlinePerform() {
-        Statement.Condition until = null;
-        if (matchWord("UNTIL")) {
-            until = parseCondition();
-        }
-        // Collect inline statements until END-PERFORM
+    private Statement parseInlinePerformUntil() {
+        advance(); // consume UNTIL
+        Statement.Condition until = parseCondition();
+        List<Statement> body = collectInlineBody();
+        return new Statement.InlinePerform(until, body);
+    }
+
+    private Statement parseInlinePerformVarying() {
+        advance(); // consume VARYING
+        String varying = current().value(); advance();
+        expect("FROM"); String from = readOperand();
+        expect("BY"); String by = readOperand();
+        expect("UNTIL");
+        Statement.Condition until = parseCondition();
+        List<Statement> body = collectInlineBody();
+        return Statement.InlinePerform.varying(varying, from, by, until, body);
+    }
+
+    /** Collect inline statements between the current position and END-PERFORM. */
+    private List<Statement> collectInlineBody() {
         List<Statement> body = new ArrayList<>();
         while (!atEnd() && !peek("END-PERFORM")) {
             try {
@@ -902,7 +1056,7 @@ public final class Parser {
         }
         matchWord("END-PERFORM");
         consumeStatementEnd();
-        return new Statement.InlinePerform(until, body);
+        return body;
     }
 
     private Statement parseDisplay() {
@@ -983,9 +1137,20 @@ public final class Parser {
         advance(); // consume WRITE
         String rec = current().value(); advance();
         String from = null;
+        int advanceLines = 0;
         if (matchWord("FROM")) { from = current().value(); advance(); }
+        // WRITE rec AFTER ADVANCING n LINES
+        if (matchWord("AFTER") || matchWord("BEFORE")) {
+            if (matchWord("ADVANCING")) {
+                if (current().type() == Token.Type.NUMBER) {
+                    advanceLines = Integer.parseInt(current().value());
+                    advance();
+                }
+                matchWord("LINES"); matchWord("LINE"); // consume optional
+            }
+        }
         consumeStatementEnd();
-        return new Statement.Write(rec, from);
+        return new Statement.Write(rec, from, advanceLines);
     }
 
     private Statement parseGoTo() {
@@ -1275,6 +1440,11 @@ public final class Parser {
         boolean searchAll = matchWord("ALL");
         String table = current().value(); advance();
 
+        // SEARCH table VARYING index-name — consume the VARYING clause
+        if (matchWord("VARYING")) {
+            advance(); // consume the index name (used by runtime, not emitted separately)
+        }
+
         List<Statement> atEnd = new ArrayList<>();
         List<Statement.SearchWhen> whenClauses = new ArrayList<>();
 
@@ -1290,7 +1460,16 @@ public final class Parser {
             String right = null;
             if (matchWord("=") || matchWord("EQUAL")) {
                 consumeIf("TO");
-                right = readOperand();
+                // Right side can be a field, number literal, or string literal
+                if (current().type() == Token.Type.NUMBER) {
+                    right = "\"" + current().value() + "\""; // wrap as literal
+                    advance();
+                } else if (current().type() == Token.Type.STRING) {
+                    right = "\"" + current().value() + "\"";
+                    advance();
+                } else {
+                    right = readOperand();
+                }
             }
             List<Statement> body = new ArrayList<>();
             while (!atEnd() && !peek("WHEN") && !peek("END-SEARCH") && !atPeriod()) {

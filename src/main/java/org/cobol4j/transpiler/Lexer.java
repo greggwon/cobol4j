@@ -162,11 +162,17 @@ public final class Lexer {
 
             // Period
             if (c == '.') {
-                // Check if this is a decimal in a number (peek back and forward)
+                // .25 = decimal number (period followed by digit, preceded by whitespace)
+                if (i + 1 < len && Character.isDigit(line.charAt(i + 1))
+                    && (i == 0 || Character.isWhitespace(line.charAt(i - 1)))) {
+                    // Leading-decimal number literal: .25 means 0.25
+                    i = readNumber(line, i, lineNum);
+                    continue;
+                }
+                // Mid-number decimal: 100.50
                 if (i + 1 < len && Character.isDigit(line.charAt(i + 1))
                     && i > 0 && Character.isDigit(line.charAt(i - 1))) {
-                    // Part of a number — don't emit as separate period
-                    // This case is handled by the number reader below
+                    // Part of a number — handled by the number reader
                     i++;
                     continue;
                 }
@@ -200,9 +206,30 @@ public final class Lexer {
                 continue;
             }
 
-            // Number (starts with digit, or sign followed by digit)
+            // Number or numeric paragraph name (e.g., 1000-OPEN-FILES)
             if (Character.isDigit(c)) {
-                i = readNumber(line, i, lineNum);
+                // Peek ahead: if digits are followed by hyphen+letter, it's a WORD
+                int peek = i;
+                while (peek < len && Character.isDigit(line.charAt(peek))) peek++;
+                if (peek < len && line.charAt(peek) == '-'
+                    && peek + 1 < len && Character.isLetter(line.charAt(peek + 1))) {
+                    // Numeric-prefixed paragraph name: treat as WORD
+                    i = readWord(line, i, lineNum);
+                } else {
+                    i = readNumber(line, i, lineNum);
+                }
+                continue;
+            }
+
+            // Dollar sign — valid in PIC strings ($$,$$$,$$9.99)
+            // Emit as a WORD token so the PIC parser can collect it
+            if (c == '$') {
+                StringBuilder sb = new StringBuilder();
+                while (i < len && line.charAt(i) == '$') {
+                    sb.append('$');
+                    i++;
+                }
+                tokens.add(new Token(Token.Type.WORD, sb.toString(), lineNum));
                 continue;
             }
 

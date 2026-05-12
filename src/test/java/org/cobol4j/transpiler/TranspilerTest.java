@@ -365,7 +365,7 @@ class TranspilerTest {
     }
 
     @Test
-    void transpileCallUnknownProducesError() {
+    void transpileCallUnknownProducesWarning() {
         String cobol = """
             IDENTIFICATION DIVISION.
             PROGRAM-ID. UNK-TEST.
@@ -379,19 +379,13 @@ class TranspilerTest {
                 STOP RUN.
             """;
 
-        // Unknown CALL targets cause transpilation failure
-        System.out.println("--- Expected errors below (testing unsupported CALL detection) ---");
-        try {
-            TranspileDiagnostics diag = new TranspileDiagnostics();
-            String java = Transpiler.transpile(cobol, diag);
-            assertNull(java, "Should return null when errors exist");
-            assertTrue(diag.hasErrors());
-            assertTrue(diag.errors().stream()
-                .anyMatch(d -> d.cobolConstruct().contains("ioctl")),
-                "Should have error about ioctl: " + diag.errors());
-        } finally {
-            System.out.println("--- End expected errors ---");
-        }
+        // Unknown CALL targets now produce a LOG.warning in the generated code
+        // instead of failing transpilation — the user can replace with a real call
+        TranspileDiagnostics diag = new TranspileDiagnostics();
+        String java = Transpiler.transpile(cobol, diag);
+        assertNotNull(java, "Unknown CALL should still produce output");
+        assertTrue(java.contains("LOG.warning") && java.contains("ioctl"),
+            "Should emit LOG.warning about ioctl: " + java);
     }
 
     @Test

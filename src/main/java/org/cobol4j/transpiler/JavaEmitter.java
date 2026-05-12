@@ -44,6 +44,8 @@ public final class JavaEmitter {
     private record FieldInfo(String name, String recordName, boolean numeric,
                               boolean isGroup, boolean isCondition) {}
 
+    private int fillerCounter = 0;
+
     private JavaEmitter(CobolProgram program, TranspileDiagnostics diag) {
         this.program = program;
         this.className = toJavaClassName(program.programId());
@@ -54,6 +56,10 @@ public final class JavaEmitter {
     /** Build a symbol table from all DATA DIVISION entries. */
     private Map<String, FieldInfo> buildSymbolTable() {
         Map<String, FieldInfo> table = new java.util.LinkedHashMap<>();
+        // Implicit COBOL registers — not in any record but referenced as fields
+        table.put("SQLCODE", new FieldInfo("SQLCODE", "__IMPLICIT__", true, false, false));
+        table.put("RETURN-CODE", new FieldInfo("RETURN-CODE", "__IMPLICIT__", true, false, false));
+        table.put("SORT-RETURN", new FieldInfo("SORT-RETURN", "__IMPLICIT__", true, false, false));
         List<RecordGroup> groups = groupByLevel01();
         for (RecordGroup g : groups) {
             String recName = g.name;
@@ -77,6 +83,32 @@ public final class JavaEmitter {
     }
 
     /** Look up whether a field is numeric. */
+    /**
+     * Map implicit COBOL registers to Java read expressions.
+     * Returns null if the name is not an implicit register.
+     */
+    private String implicitRegister(String name) {
+        return switch (name.toUpperCase()) {
+            case "SQLCODE"     -> "Decimal.of(session.sqlCode())";
+            case "RETURN-CODE" -> "Decimal.of(System.getProperty(\"cobol4j.returnCode\", \"0\"))";
+            case "SORT-RETURN" -> "Decimal.ZERO";
+            default -> null;
+        };
+    }
+
+    private boolean isImplicitRegister(String name) {
+        return implicitRegister(name) != null;
+    }
+
+    /** Generate a MOVE TO for an implicit register. */
+    private String emitImplicitRegisterMove(String target, String value) {
+        return switch (target.toUpperCase()) {
+            case "RETURN-CODE" -> "System.setProperty(\"cobol4j.returnCode\", String.valueOf(" + value + "));";
+            case "SQLCODE"     -> "// MOVE to SQLCODE — read-only register, no-op";
+            default            -> "// MOVE to " + target + " — implicit register, no-op";
+        };
+    }
+
     private boolean isNumericField(String fieldName) {
         String name = fieldName.contains("(") ? fieldName.substring(0, fieldName.indexOf('(')) : fieldName;
         FieldInfo info = symbolTable.get(name);
@@ -273,8 +305,14 @@ public final class JavaEmitter {
                 "Elementary entry '" + entry.name() + "' has no PIC clause");
         }
 
+        // Generate unique names for FILLER fields
+        String fieldName = entry.name();
+        if (fieldName.equalsIgnoreCase("FILLER")) {
+            fieldName = "FILLER-" + (++fillerCounter);
+        }
+
         StringBuilder sb = new StringBuilder();
-        sb.append(".pic(\"").append(entry.name()).append("\", \"").append(entry.pic()).append("\")");
+        sb.append(".pic(\"").append(fieldName).append("\", \"").append(entry.pic()).append("\")");
 
         if (entry.usage() != null) {
             String u = entry.usage().toUpperCase().replace("-", "");
@@ -397,7 +435,7 @@ public final class JavaEmitter {
         else if (stmt instanceof Statement.Open o) line("ctx.open(" + toJavaFieldName(o.fileName()) + ", CobolFile.OpenMode." + o.mode().toUpperCase().replace("-", "") + ");");
         else if (stmt instanceof Statement.Close c) line("ctx.close(" + toJavaFieldName(c.fileName()) + ");");
         else if (stmt instanceof Statement.Read r) emitRead(r);
-        else if (stmt instanceof Statement.Write w) line("ctx.write(" + toJavaFieldName(w.recordName()) + ", " + recRef(w.recordName()) + ");");
+        else if (stmt instanceof Statement.Write w) emitWrite(w);
         else if (stmt instanceof Statement.GoTo g) line("ctx.goTo(\"" + g.paragraph() + "\");");
         else if (stmt instanceof Statement.StopRun s) line("ctx.stopRun();");
         else if (stmt instanceof Statement.ExitParagraph e) line("ctx.exitParagraph();");
@@ -559,6 +597,11 @@ public final class JavaEmitter {
     private void emitMove(Statement.Move m) {
         for (String target : m.targets()) {
             String val = emitExpr(m.source());
+            // Implicit registers (RETURN-CODE, SQLCODE, etc.)
+            if (isImplicitRegister(target)) {
+                line(emitImplicitRegisterMove(target, val));
+                continue;
+            }
             if (target.contains("(") && target.contains(")")) {
                 // Subscripted or ref-mod target
                 String fieldName = target.substring(0, target.indexOf('('));
@@ -790,15 +833,38 @@ public final class JavaEmitter {
     }
 
     private void emitInlinePerform(Statement.InlinePerform ip) {
-        if (ip.until() != null) {
-            line("ctx.performUntil(() -> " + emitCondition(ip.until()) + ", () -> {");
+        if (ip.isTimes()) {
+            // PERFORM n TIMES ... END-PERFORM
+            line("for (int _i = 0; _i < " + ip.times() + "; _i++) {");
+            indent++;
+            for (Statement s : ip.body()) emitStatement(s);
+            indent--;
+            line("}");
+        } else if (ip.isVarying()) {
+            // PERFORM VARYING field FROM x BY y UNTIL cond ... END-PERFORM
+            String rec = recRef(ip.varying());
+            line(rec + ".move(\"" + ip.varying() + "\", Decimal.of(\"" + ip.from() + "\"));");
+            line("while (!(" + emitCondition(ip.until()) + ")) {");
+            indent++;
+            for (Statement s : ip.body()) emitStatement(s);
+            line(rec + ".add(\"" + ip.varying() + "\", Decimal.of(\"" + ip.by() + "\"));");
+            indent--;
+            line("}");
+        } else if (ip.until() != null) {
+            // PERFORM UNTIL cond ... END-PERFORM
+            line("while (!(" + emitCondition(ip.until()) + ")) {");
+            indent++;
+            for (Statement s : ip.body()) emitStatement(s);
+            indent--;
+            line("}");
         } else {
-            line("while (true) {"); // no condition = infinite (shouldn't happen in valid COBOL)
+            // No condition — shouldn't happen in valid COBOL
+            line("{ // inline perform");
+            indent++;
+            for (Statement s : ip.body()) emitStatement(s);
+            indent--;
+            line("}");
         }
-        indent++;
-        for (Statement s : ip.body()) emitStatement(s);
-        indent--;
-        line("});");
     }
 
     private void emitPerform(Statement.Perform p) {
@@ -888,6 +954,43 @@ public final class JavaEmitter {
         } else {
             line("ctx.accept(" + rec + ", \"" + a.target() + "\");");
         }
+    }
+
+    private void emitWrite(Statement.Write w) {
+        String fileVar = findFileForRecord(w.recordName());
+        String recVar = toJavaFieldName(w.recordName());
+        if (w.from() != null) {
+            // WRITE record FROM source — load source into record, then write
+            // FROM may reference an 01-level record or a field within a record
+            String fromRef = isRecordName(w.from())
+                ? toJavaFieldName(w.from())
+                : recRef(w.from());
+            line(recVar + ".loadFrom(" + fromRef + ".buffer());");
+        }
+        if (w.advanceLines() > 0) {
+            // WRITE AFTER ADVANCING n LINES — write blank lines first
+            for (int i = 0; i < w.advanceLines(); i++) {
+                line(fileVar + ".write(" + recVar + "); // advance");
+            }
+        }
+        line(fileVar + ".write(" + recVar + ");");
+    }
+
+    /** Find the file variable name associated with a record name. */
+    /** Check if a name is a top-level (01/77) record name, not a field within a record. */
+    private boolean isRecordName(String name) {
+        List<RecordGroup> groups = groupByLevel01();
+        return groups.stream().anyMatch(g -> g.name.equalsIgnoreCase(name));
+    }
+
+    private String findFileForRecord(String recordName) {
+        for (var fb : program.fileBindings()) {
+            if (fb.recordName().equalsIgnoreCase(recordName)) {
+                return toJavaFieldName(fb.fileName());
+            }
+        }
+        // Fallback: use the record name as the file variable
+        return toJavaFieldName(recordName);
     }
 
     private void emitRead(Statement.Read r) {
@@ -1252,9 +1355,16 @@ public final class JavaEmitter {
 
             if (w.conditionRight() != null) {
                 String rightVal = w.conditionRight();
-                if (rightVal.contains("(")) rightVal = rightVal.substring(0, rightVal.indexOf('('));
+                String rightExpr;
+                if (rightVal.startsWith("\"")) {
+                    // Literal value — use directly
+                    rightExpr = rightVal;
+                } else {
+                    if (rightVal.contains("(")) rightVal = rightVal.substring(0, rightVal.indexOf('('));
+                    rightExpr = recRef(rightVal) + ".getString(\"" + rightVal + "\").trim()";
+                }
                 line(".when(idx -> " + rec + ".getString(\"" + condField + "\", idx).trim().equals("
-                    + recRef(rightVal) + ".getString(\"" + rightVal + "\").trim()), idx -> {");
+                    + rightExpr + "), idx -> {");
             } else {
                 line(".when(idx -> " + rec + ".is(\"" + condField + "\"), idx -> {");
             }
@@ -1407,21 +1517,13 @@ public final class JavaEmitter {
                 }
             }
             default -> {
-                // Unknown CALL target — record as error, emit comment preserving original
-                diag.error("emitter", 0, "CALL \"" + target + "\"",
-                    "No SystemCall mapping for '" + target + "'. "
-                    + "This CALL cannot be translated automatically. "
-                    + "Provide a custom SystemCall implementation or translate manually.");
-                line("// ERROR: CALL \"" + target + "\" not supported in this implementation");
-                StringBuilder args = new StringBuilder();
-                for (int i = 0; i < params.size(); i++) {
-                    if (i > 0) args.append(", ");
-                    args.append(emitCallParam(params, i));
-                }
-                line("// Original: CALL \"" + target + "\" USING " + args
-                    + (returning != null ? " RETURNING " + returning : "") + "");
-                line("throw new UnsupportedOperationException(\"CALL \\\"" + target
-                    + "\\\" not supported\");");
+                // Unknown CALL target — emit a LOG.warning and a generic call pattern
+                // The user can replace this with a real program reference
+                line("LOG.warning(\"CALL '" + target
+                    + "' — no built-in mapping. Provide a Program instance for '"
+                    + target + "'.\");");
+                line("// CALL \"" + target + "\" — replace with: ctx.call(programRef"
+                    + (params.isEmpty() ? "" : ", fields...") + ");");
             }
         }
 
@@ -1476,6 +1578,10 @@ public final class JavaEmitter {
     }
 
     private String emitFieldRef(Expr.FieldRef fr) {
+        // Implicit COBOL registers — not defined in any record
+        String implicit = implicitRegister(fr.name());
+        if (implicit != null) return implicit;
+
         if (fr.isRefMod()) {
             return recRef(fr.name()) + ".substring(\"" + fr.name() + "\", "
                 + emitRefModArg(fr.refModPos()) + ", " + emitRefModArg(fr.refModLen()) + ")";
@@ -1621,6 +1727,23 @@ public final class JavaEmitter {
 
             String leftExpr = emitExpr(left);
             String rightExpr = emitExpr(right);
+
+            // Alphanumeric comparisons use String.equals/compareTo
+            boolean leftIsAlpha = leftFieldName != null && !isNumericField(leftFieldName);
+            boolean rightIsString = (right instanceof Expr.StringLit);
+            if (leftIsAlpha || rightIsString) {
+                String op = switch (s.operator()) {
+                    case "="  -> ".equals(" + rightExpr + ")";
+                    case ">"  -> ".compareTo(" + rightExpr + ") > 0";
+                    case "<"  -> ".compareTo(" + rightExpr + ") < 0";
+                    case ">=" -> ".compareTo(" + rightExpr + ") >= 0";
+                    case "<=" -> ".compareTo(" + rightExpr + ") <= 0";
+                    default   -> ".equals(" + rightExpr + ")";
+                };
+                return prefix + leftExpr + op;
+            }
+
+            // Numeric comparisons use Decimal methods
             String op = switch (s.operator()) {
                 case "="  -> ".equalTo(" + rightExpr + ")";
                 case ">"  -> ".greaterThan(" + rightExpr + ")";
@@ -1656,6 +1779,8 @@ public final class JavaEmitter {
     private String fieldGet(String fieldName) {
         if (fieldName == null) throw new Transpiler.TranspileException("Null field name in fieldGet");
         if (fieldName.matches("-?\\d+\\.?\\d*")) return "Decimal.of(\"" + fieldName + "\")";
+        String implicit = implicitRegister(fieldName);
+        if (implicit != null) return implicit;
         if (isNumericField(fieldName)) {
             return recRef(fieldName) + ".getDecimal(\"" + fieldName + "\")";
         }
@@ -1723,6 +1848,11 @@ public final class JavaEmitter {
         // Look up in symbol table
         FieldInfo info = symbolTable.get(searchName);
         if (info != null) {
+            if ("__IMPLICIT__".equals(info.recordName)) {
+                // Implicit register — doesn't belong to a record variable
+                // Return a placeholder that emitFieldRef/fieldGet will override
+                return "/* implicit:" + searchName + " */";
+            }
             return toJavaFieldName(info.recordName);
         }
 

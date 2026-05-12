@@ -101,7 +101,25 @@ public sealed interface Statement {
                    Condition until) implements Statement {}
     enum PerformType { SIMPLE, THRU, TIMES, UNTIL, VARYING }
 
-    record InlinePerform(Condition until, List<Statement> body) implements Statement {}
+    record InlinePerform(Condition until, List<Statement> body,
+                         int times,
+                         String varying, String from, String by) implements Statement {
+        /** PERFORM UNTIL ... END-PERFORM */
+        public InlinePerform(Condition until, List<Statement> body) {
+            this(until, body, 0, null, null, null);
+        }
+        /** PERFORM n TIMES ... END-PERFORM */
+        public static InlinePerform times(int n, List<Statement> body) {
+            return new InlinePerform(null, body, n, null, null, null);
+        }
+        /** PERFORM VARYING field FROM x BY y UNTIL cond ... END-PERFORM */
+        public static InlinePerform varying(String field, String from, String by,
+                                             Condition until, List<Statement> body) {
+            return new InlinePerform(until, body, 0, field, from, by);
+        }
+        public boolean isTimes() { return times > 0; }
+        public boolean isVarying() { return varying != null; }
+    }
     record GoTo(String paragraph) implements Statement {}
     record StopRun() implements Statement {}
     record ExitParagraph() implements Statement {}
@@ -123,7 +141,10 @@ public sealed interface Statement {
     record Close(String fileName) implements Statement {}
     record Read(String fileName, String into, List<Statement> atEnd,
                 List<Statement> notAtEnd) implements Statement {}
-    record Write(String recordName, String from) implements Statement {}
+    record Write(String recordName, String from, int advanceLines) implements Statement {
+        /** Backward-compatible constructor without ADVANCING. */
+        public Write(String recordName, String from) { this(recordName, from, 0); }
+    }
 
     // ── String operations ───────────────────────────────────────────
 

@@ -89,6 +89,15 @@ public final class Transpiler {
         return result;
     }
 
+    /**
+     * Transpile with diagnostics and source filename.
+     * The filename is included in all diagnostic messages.
+     */
+    public static String transpile(String cobolSource, TranspileDiagnostics diag, String sourceFile) {
+        diag.setSourceFile(sourceFile);
+        return transpile(cobolSource, diag);
+    }
+
     /** Transpile with explicit format specification. */
     public static String transpile(String cobolSource, boolean fixedFormat) {
         TranspileDiagnostics diag = new TranspileDiagnostics();

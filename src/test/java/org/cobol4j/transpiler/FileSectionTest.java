@@ -402,7 +402,7 @@ class FileSectionTest {
         assertNotNull(java);
         assertTrue(java.contains("ctx.open(outputFile"),
             "OPEN should reference outputFile: " + java);
-        assertTrue(java.contains("ctx.write("),
+        assertTrue(java.contains(".write("),
             "WRITE should be emitted: " + java);
         assertTrue(java.contains("ctx.close(outputFile)"),
             "CLOSE should reference outputFile: " + java);

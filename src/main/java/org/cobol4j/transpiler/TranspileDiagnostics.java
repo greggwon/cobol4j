@@ -60,33 +60,46 @@ public final class TranspileDiagnostics {
     public enum Severity { INFO, WARNING, ERROR }
 
     public record Diagnostic(Severity severity, String phase, int line,
-                              String cobolConstruct, String message) {
+                              String cobolConstruct, String message,
+                              String sourceFile) {
+        /** Backward-compatible constructor without source file. */
+        public Diagnostic(Severity severity, String phase, int line,
+                          String cobolConstruct, String message) {
+            this(severity, phase, line, cobolConstruct, message, null);
+        }
         @Override
         public String toString() {
+            String file = sourceFile != null ? sourceFile + ":" : "";
             String loc = line > 0 ? " (line " + line + ")" : "";
-            return severity + " [" + phase + "]" + loc + ": "
+            return severity + " [" + phase + "] " + file + loc + ": "
                 + cobolConstruct + " — " + message;
         }
     }
 
     private final List<Diagnostic> diagnostics = new ArrayList<>();
+    private String sourceFile;
 
     // ── Reporting ───────────────────────────────────────────────────
 
+    /** Set the source file name — shown in all subsequent diagnostics. */
+    public void setSourceFile(String fileName) {
+        this.sourceFile = fileName;
+    }
+
     public void error(String phase, int line, String construct, String message) {
-        Diagnostic d = new Diagnostic(Severity.ERROR, phase, line, construct, message);
+        Diagnostic d = new Diagnostic(Severity.ERROR, phase, line, construct, message, sourceFile);
         diagnostics.add(d);
         LOG.log(Level.SEVERE, d.toString());
     }
 
     public void warning(String phase, int line, String construct, String message) {
-        Diagnostic d = new Diagnostic(Severity.WARNING, phase, line, construct, message);
+        Diagnostic d = new Diagnostic(Severity.WARNING, phase, line, construct, message, sourceFile);
         diagnostics.add(d);
         LOG.log(Level.WARNING, d.toString());
     }
 
     public void info(String phase, int line, String construct, String message) {
-        Diagnostic d = new Diagnostic(Severity.INFO, phase, line, construct, message);
+        Diagnostic d = new Diagnostic(Severity.INFO, phase, line, construct, message, sourceFile);
         diagnostics.add(d);
         LOG.log(Level.INFO, d.toString());
     }
