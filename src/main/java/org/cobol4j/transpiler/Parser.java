@@ -706,9 +706,9 @@ public final class Parser {
     }
 
     /** Backward-compatible: parse statements until next paragraph or end. */
-    private List<Statement> parseStatements() {
-        return parseStatementsUntil(tokens.size());
-    }
+    // private List<Statement> parseStatements() {
+    //     return parseStatementsUntil(tokens.size());
+    // }
 
     private Statement parseStatement() {
         Token t = current();
@@ -820,7 +820,7 @@ public final class Parser {
             sources.add(parseExpr());
         }
         List<String> targets = new ArrayList<>();
-        String giving = null;
+//        String giving = null;
         boolean rounded = false;
         if (matchWord("TO")) {
             while (!atEnd() && !atPeriod() && !peek("GIVING") && !peek("ROUNDED")
@@ -1390,7 +1390,7 @@ public final class Parser {
         advance(); // consume INSPECT
         String target = current().value(); advance();
 
-        String before = null, after = null;
+//        String before = null, after = null;
 
         if (matchWord("TALLYING")) {
             String tallyField = current().value(); advance();
@@ -2435,14 +2435,6 @@ public final class Parser {
     }
 
     /** Parse a known-but-unsupported verb into an Unsupported AST node. */
-    private Statement parseUnsupported(String verb, String hint) {
-        int line = current().line();
-        String rawCobol = captureToSyncPoint(current());
-        diag.warning("parser", line, verb,
-            verb + " verb not yet implemented — a placeholder will be generated");
-        return new Statement.Unsupported(verb, rawCobol, line, hint);
-    }
-
     /** Capture tokens from current position to the next sync point as raw text. */
     private String captureToSyncPoint(Token start) {
         StringBuilder sb = new StringBuilder(start.value());
@@ -2564,14 +2556,14 @@ public final class Parser {
         return new Statement.UseDeclarative(scope, fileName, line);
     }
 
-    private void skipDivision() {
-        // Skip until next DIVISION keyword
-        expect("DIVISION");
-        consumePeriod();
-        while (!atEnd() && !peek("DATA") && !peek("PROCEDURE")) {
-            advance();
-        }
-    }
+    // private void skipDivision() {
+    //     // Skip until next DIVISION keyword
+    //     expect("DIVISION");
+    //     consumePeriod();
+    //     while (!atEnd() && !peek("DATA") && !peek("PROCEDURE")) {
+    //         advance();
+    //     }
+    // }
 
     private static boolean isVerb(String word) {
         return switch (word.toUpperCase()) {
