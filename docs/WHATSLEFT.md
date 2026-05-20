@@ -87,6 +87,43 @@ gaps that real-world COBOL programs may need.
 
 ---
 
+## Japanese / NATIONAL Character Support (PIC N)
+
+COBOL's NATIONAL data type (`PIC N`) is critical for Japanese enterprise systems.
+Over 32,000 companies rely on COBOL with Japanese text processing — customer names,
+addresses, product descriptions all stored as double-byte characters. Without proper
+PIC N support, string operations produce mojibake (garbled text) by splitting
+double-byte characters at byte boundaries.
+
+**What's needed:**
+
+| Feature | Impact | Notes |
+|---------|--------|-------|
+| **PIC N field type** | High | `Record.Builder.picN(name, count)` — allocates `count * 2` bytes for double-byte characters. The PIC clause governs whether a field is byte-oriented (PIC X) or character-oriented (PIC N). |
+| **Shift-JIS encoding** | High | Japanese mainframe and Windows systems use Shift-JIS. The `BaseRecord` encoding model currently supports ASCII and EBCDIC (CP037/CP500/CP1047). Needs to extend to Shift-JIS and UTF-16. |
+| **NATIONAL literals** | Medium | `N"こんにちは"` — double-byte string literals in COBOL source. The lexer needs to recognize the `N"..."` prefix and the parser needs to preserve the encoding. |
+| **Character-aware string operations** | High | `move()`, `getString()`, `substring()` on PIC N fields must count characters, not bytes. `FIELD(1:5)` on PIC N means characters 1-5 (bytes 1-10). `Inspect` and `CobolString` need to check the field's PIC type and use character-wise operations for NATIONAL fields. |
+| **Japanese identifiers** | Low | Variable names in Shift-JIS (e.g., `01 顧客名 PIC N(20).`). The lexer currently reads ASCII/UTF-8 identifiers. Multi-byte identifier support would require lexer changes. |
+| **NATIONAL figurative constants** | Low | SPACE, ZERO, QUOTE in a NATIONAL context occupy double-byte width. |
+
+**Architecture notes:**
+
+The design is clean — no redesign needed:
+- `Record` already carries an encoding parameter (currently `Ebcdic` or null for ASCII)
+- Extending to a general `Charset` model that includes Shift-JIS and UTF-16 is straightforward
+- The PIC N flag on the field definition drives character-vs-byte behavior throughout
+- `BaseRecord.readFrom()` / `writeTo()` are encoding-agnostic (raw bytes) — the interpretation happens at the field level
+
+**Why this matters:**
+
+Japan has the largest COBOL market outside the United States. The Japanese OSS
+Consortium maintains opensourcecobol4j specifically to serve this market, with
+extensive Shift-JIS and PIC N extensions. For cobol4j to be viable for Japanese
+enterprise migration, NATIONAL character support is essential. This is the single
+largest feature gap for the Japanese audience.
+
+---
+
 ## Build, Tooling, and Distribution
 
 | Item | Status | Notes |

@@ -57,11 +57,11 @@ One typo — using the `double` constructor instead of the `String` constructor 
 you've introduced the exact kind of mantissa error that COBOL's type system was
 designed to prevent.
 
-cobol4j eliminates this risk entirely. **The `Decimal` class is the only numeric value
-type in the public API.** There is no `BigDecimal` parameter or return type anywhere.
-There is no `float` or `double` parameter anywhere. `Decimal` can only be constructed
-from `String`, `long`, or an unscaled integer with a decimal point position — all
-exact representations:
+cobol4j eliminates this risk entirely. **The [`Decimal`](src/main/java/org/cobol4j/Decimal.java)
+class is the only numeric value type in the public API.** There is no `BigDecimal`
+parameter or return type anywhere. There is no `float` or `double` parameter anywhere.
+`Decimal` can only be constructed from `String`, `long`, or an unscaled integer with
+a decimal point position — all exact representations:
 
 ```java
 Decimal price = Decimal.of("19.99");   // exact — from string
@@ -83,7 +83,7 @@ Decimal rate  = Decimal.of(19999L, 3); // 19.999
 `Decimal` values are immutable and weakly cached — repeated `Decimal.of("19.99")`
 calls return the same instance, reducing allocation pressure without leaking memory.
 
-All arithmetic is traceable via `ValueTracker`:
+All arithmetic is traceable via [`ValueTracker`](src/main/java/org/cobol4j/ValueTracker.java):
 
 ```java
 Decimal.setTracker(new ValueTracker() {
@@ -101,16 +101,21 @@ Decimal.setTracker(new ValueTracker() {
 COBOL Source  →  Transpiler (thin)  →  Java code using cobol4j DSL
                                             ↓
                                       cobol4j Runtime Library
-                                      ├── Decimal (exact numeric values, no float/double)
-                                      ├── Record (byte-buffer backed data)
-                                      ├── Field (by-reference handles)
-                                      ├── Variable (typed named handles)
-                                      ├── Program / ProgramContext (control flow)
-                                      ├── CobolSql / SqlSession (database)
-                                      ├── CobolFile (file I/O)
-                                      ├── Arithmetic, Intrinsic, Search, Sort
-                                      └── Inspect, CobolString, CobolUnstring
 ```
+
+| Component | Source | Purpose |
+|-----------|--------|---------|
+| [Decimal](src/main/java/org/cobol4j/Decimal.java) | | Exact numeric values — no float/double |
+| [Record](src/main/java/org/cobol4j/Record.java) / [BaseRecord](src/main/java/org/cobol4j/BaseRecord.java) | | PIC-governed byte buffer with stream I/O |
+| [Field](src/main/java/org/cobol4j/Field.java) | | By-reference handle to a field within a Record |
+| [Program](src/main/java/org/cobol4j/Program.java) / [ProgramContext](src/main/java/org/cobol4j/ProgramContext.java) | | Actor-model program execution |
+| [CobolSql](src/main/java/org/cobol4j/CobolSql.java) / [SqlSession](src/main/java/org/cobol4j/SqlSession.java) | | Embedded SQL with cursors and host variables |
+| [ConnectionFactory](src/main/java/org/cobol4j/ConnectionFactory.java) | | Pluggable database connections (SQLite, H2, PostgreSQL, MySQL, Oracle) |
+| [CobolFile](src/main/java/org/cobol4j/CobolFile.java) | | Sequential and indexed file I/O |
+| [Arithmetic](src/main/java/org/cobol4j/Arithmetic.java) | | ADD/SUBTRACT/MULTIPLY/DIVIDE with GIVING, ROUNDED, REMAINDER |
+| [SizeErrorHandler](src/main/java/org/cobol4j/SizeErrorHandler.java) | | ON SIZE ERROR / NOT ON SIZE ERROR callbacks |
+| [CicsRegion](src/main/java/org/cobol4j/cics/CicsRegion.java) / [CicsContext](src/main/java/org/cobol4j/cics/CicsContext.java) | | CICS transaction container |
+| [Transpiler](src/main/java/org/cobol4j/transpiler/Transpiler.java) | | COBOL source → Java source |
 
 ## Runner — Transpile, Compile, and Execute COBOL Programs
 
