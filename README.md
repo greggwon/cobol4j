@@ -8,7 +8,7 @@
 > contributions. If you'd like to help — whether fixing a bug, finishing an
 > incomplete feature, improving documentation, or adding something new — please
 > fork the repository and submit a pull request. See the
-> [remaining work](WHATSLEFT.md) section below for known areas
+> [remaining work](docs/WHATSLEFT.md) section below for known areas
 > that could use attention.
 
 A fluent Java library that implements COBOL's runtime semantics — data layout, MOVE
@@ -21,8 +21,8 @@ calls against a runtime that already understands COBOL semantics.** The transpil
 becomes a thin syntax-directed translator. All the hard behavioral correctness lives
 in one testable, versioned library.
 
-See [DESIGN.md](DESIGN.md) for the architecture philosophy and
-[COMPARISON.md](COMPARISON.md) for a detailed look at how this approach differs
+See [DESIGN.md](docs/DESIGN.md) for the architecture philosophy and
+[COMPARISON.md](docs/COMPARISON.md) for a detailed look at how this approach differs
 from mechanical COBOL-to-Java compilers.
 
 ## Getting Started
@@ -35,7 +35,7 @@ make javadoc     # generate API docs into docs/javadoc/
 ```
 
 For examples, demos, and a complete map of what's here, see
-**[EXAMPLES.md](EXAMPLES.md)** — it covers the supplier shipment demo (batch and
+**[EXAMPLES.md](docs/EXAMPLES.md)** — it covers the supplier shipment demo (batch and
 CICS), the CUSTORD transpiler end-to-end test, every feature-specific test, and
 links to the generated javadoc.
 
@@ -225,14 +225,14 @@ customerRecord.set("ACTIVE");
 
 | I want to... | Read |
 |---|---|
-| See every COBOL feature mapped to Java | [FEATURES.md](FEATURES.md) |
-| Understand why readable Java matters for migration | [ISCOBOLNECESSARY.md](ISCOBOLNECESSARY.md) |
-| Compare with other tools (IBM watsonx, SoftwareMining, etc.) | [COMPARISON.md](COMPARISON.md) |
-| Plan database performance for batch workloads | [DATABASESPEED.md](DATABASESPEED.md) |
-| Run the demos and examples | [EXAMPLES.md](EXAMPLES.md) |
-| See the CICS transaction deployment pattern | [CICSDEMO.md](CICSDEMO.md) |
-| Understand the architecture philosophy | [DESIGN.md](DESIGN.md) |
-| Find what's left to implement | [WHATSLEFT.md](WHATSLEFT.md) |
+| See every COBOL feature mapped to Java | [FEATURES.md](docs/FEATURES.md) |
+| Understand why readable Java matters for migration | [ISCOBOLNECESSARY.md](docs/ISCOBOLNECESSARY.md) |
+| Compare with other tools (IBM watsonx, SoftwareMining, etc.) | [COMPARISON.md](docs/COMPARISON.md) |
+| Plan database performance for batch workloads | [DATABASESPEED.md](docs/DATABASESPEED.md) |
+| Run the demos and examples | [EXAMPLES.md](docs/EXAMPLES.md) |
+| See the CICS transaction deployment pattern | [CICSDEMO.md](docs/CICSDEMO.md) |
+| Understand the architecture philosophy | [DESIGN.md](docs/DESIGN.md) |
+| Find what's left to implement | [WHATSLEFT.md](docs/WHATSLEFT.md) |
 
 ## Building
 
@@ -248,7 +248,7 @@ Zero external production dependencies.
 
 ## Status
 
-**499 passing tests.** See [WHATSLEFT.md](WHATSLEFT.md) for the full list of
+**499 passing tests.** See [WHATSLEFT.md](docs/WHATSLEFT.md) for the full list of
 remaining work and known gaps.
 
 ## Contributing
@@ -262,8 +262,8 @@ help is welcome:
 - Database dialect testing (PostgreSQL, MySQL, Oracle)
 - Documentation improvements and tutorials
 
-See [EXAMPLES.md](EXAMPLES.md) for the full test inventory and
-[the remaining work section](WHATSLEFT.md) for specific items.
+See [EXAMPLES.md](docs/EXAMPLES.md) for the full test inventory and
+[the remaining work section](docs/WHATSLEFT.md) for specific items.
 
 ## License
 
